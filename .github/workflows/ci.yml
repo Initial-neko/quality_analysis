@@ -2,7 +2,7 @@ name: Java 8 CI
 
 on:
   push:
-    branches: [ main, feature/profile-v1 ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
@@ -16,5 +16,19 @@ jobs:
           distribution: temurin
           java-version: '8'
           cache: maven
-      - name: Run tests
-        run: mvn -B test
+      - name: Test and package distribution
+        run: mvn -B clean package
+      - name: Verify distribution layout
+        shell: bash
+        run: |
+          DIST="target/quality-analysis-0.1.0-SNAPSHOT-distribution"
+          test -f "$DIST/quality-analysis.jar"
+          test -d "$DIST/lib"
+          test -d "$DIST/src/main"
+          test -d "$DIST/src/test"
+          test -d "$DIST/docs"
+          test -d "$DIST/scripts"
+          test -f "$DIST/pom.xml"
+          test -f "$DIST/README.md"
+          test -f "target/quality-analysis-0.1.0-SNAPSHOT-distribution.zip"
+          find "$DIST/lib" -maxdepth 1 -type f -name '*.jar' | grep -q .
