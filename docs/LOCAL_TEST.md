@@ -1,17 +1,15 @@
 # 本地运行与验收说明
 
-本文用于验收 Profile-only V1，建议按顺序执行：**环境检查 -> Mock 回归 -> 核心无依赖回归 -> 打包 -> 达梦实库 -> Excel/HTML 人工验收**。
+本文用于验收 Profile-only V1。正式主线以 `main` 为准。
 
 ## 一、环境要求
 
-建议环境：
-
-- JDK 8
+- JDK 8+
 - Maven 3.x
-- Git Bash（Windows）
-- 达梦 JDBC Driver（实库测试时需要）
+- Windows 下建议使用 Git Bash
+- 达梦 JDBC Driver 仅在实库运行时需要
 
-先检查：
+先确认：
 
 ```bash
 java -version
@@ -19,73 +17,32 @@ javac -version
 mvn -version
 ```
 
-重点确认 Maven 实际使用的 Java 版本。如果本机安装了多个 JDK，`mvn -version` 中的 Java home 应该指向准备验收的 JDK。
-
-## 二、获取正式代码
-
-本轮 V1 合并以后，以 `main` 为准：
+## 二、拉取代码
 
 ```bash
-git clone https://github.com/Initial-neko/quality_analysis.git
-cd quality_analysis
-git checkout main
-git pull
-```
-
-如果仓库已经存在：
-
-```bash
-git fetch origin
 git checkout main
 git pull origin main
 ```
 
-## 三、第一层：完整 Maven 回归
-
-执行：
+## 三、不接数据库先看 Mock 报告
 
 ```bash
-mvn clean test
+bash scripts/mock-report.sh
 ```
 
-期望：
+生成：
 
 ```text
-BUILD SUCCESS
+target/mock-profile-report/
+├── manifest.json
+├── tables/
+├── quality-profile.xlsx
+└── quality-profile.html
 ```
 
-这一层会验证：
+直接打开 Excel 和 HTML 即可。
 
-- Profile 核心指标
-- Minimal Profile 默认开关
-- JDBC 扫描 SQL 约束
-- Mock CUSTOMER / ORDERS
-- 每表 JSON 持久化和重新读取
-- manifest 保存
-- Excel 生成和关键 Sheet
-- HTML 生成和关键内容
-
-如果这里失败，先不要接真实达梦。
-
-## 四、第二层：只验证 Profile 核心
-
-如果希望确认 Profile 核心不依赖 Gson / POI，可以在 Git Bash 中执行：
-
-```bash
-bash scripts/manual-regression.sh
-```
-
-这个脚本只编译和运行 Profile 核心，不编译 persistence/report/run/cli 层。
-
-期望看到类似：
-
-```text
-Manual regression checks passed
-```
-
-这个测试的意义是：即使以后报告依赖发生变化，核心 Profile 仍然可以单独验证。
-
-## 五、打包
+## 四、完整回归 + 一条命令打包
 
 执行：
 
@@ -93,108 +50,139 @@ Manual regression checks passed
 mvn clean package
 ```
 
-生成：
+该命令会：
+
+1. 编译 Java 8 代码；
+2. 执行全部单元/回归测试；
+3. 生成主程序 JAR；
+4. 收集全部 runtime 依赖到 `lib/`；
+5. 带上源码、文档、脚本和配置示例；
+6. 同时生成目录版和 ZIP 版发行包。
+
+最终产物：
 
 ```text
-target/quality-analysis-0.1.0-SNAPSHOT.jar
+target/quality-analysis-0.1.0-SNAPSHOT-distribution/
+├── quality-analysis.jar
+├── lib/
+├── src/
+├── config/
+│   └── tables.txt.example
+├── docs/
+├── scripts/
+├── pom.xml
+└── README.md
+
+target/quality-analysis-0.1.0-SNAPSHOT-distribution.zip
 ```
 
-由于当前不是 fat-jar，Gson 和 Apache POI 仍然是独立运行依赖。把 runtime 依赖复制到：
+看到：
+
+```text
+BUILD SUCCESS
+```
+
+即可认为代码、测试和发行包构建都成功。
+
+## 五、表清单文件
+
+正式运行时不扫描全库，而是明确提供要扫描的表。
+
+复制示例：
 
 ```bash
-mvn dependency:copy-dependencies \
-  -DincludeScope=runtime \
-  -DoutputDirectory=target/dependency
+cp config/tables.txt.example config/tables.txt
 ```
 
-此时应有：
+如果默认 Schema 为 `TEST`：
 
 ```text
-target/
-├── quality-analysis-0.1.0-SNAPSHOT.jar
-└── dependency/
-    ├── gson-2.10.1.jar
-    ├── poi-5.2.2.jar
-    ├── poi-ooxml-5.2.2.jar
-    └── POI 的其他传递依赖...
+# config/tables.txt
+CUSTOMER
+ORDERS
+PRODUCT
+```
+
+也可以跨 Schema：
+
+```text
+TEST.CUSTOMER
+SALES.SALES_ORDER
+MASTER.PRODUCT
+```
+
+规则：
+
+- UTF-8；
+- 每行一张表；
+- 空行忽略；
+- 以 `#` 开头的整行注释忽略；
+- 重复表自动去重；
+- `TABLE` 使用默认 Schema；
+- `SCHEMA.TABLE` 使用显式 Schema；
+- 默认 Schema 参数传 `-` 时，每行必须写 `SCHEMA.TABLE`；
+- 程序不会查询全库表清单，也不会扫描文件之外的表。
+
+详见：
+
+```text
+docs/TABLE_LIST.md
 ```
 
 ## 六、准备达梦 JDBC Driver
 
-达梦 JDBC jar 不提交仓库。
+发行包不会携带达梦 JDBC Driver。
 
-例如本地：
-
-```text
-D:\dm\DmJdbcDriver18.jar
-```
-
-实际使用你们环境中已经验证可以连接达梦的 JDBC jar 即可。
-
-## 七、先做单表控制台测试
-
-建议不要一开始就扫描很多表，先验证一张较小的业务表。
-
-参数格式：
+现场拿到驱动后，最简单的方式是直接复制到发行包：
 
 ```text
-<driver-class> <jdbc-url> <user> <password> <schema> <table> [fetchSize]
+lib/DmJdbcDriver18.jar
 ```
 
-Git Bash 示例：
+这样运行时统一使用：
+
+```text
+quality-analysis.jar;lib/*
+```
+
+## 七、正式报告模式
+
+推荐命令格式：
+
+```text
+<driver-class> <jdbc-url> <user> <password> <database-label> <default-schema|->
+--table-file <table-file> <output-root> [fetchSize]
+```
+
+在发行包目录中运行，例如：
 
 ```bash
-java -cp "target/quality-analysis-0.1.0-SNAPSHOT.jar;target/dependency/*;D:/dm/DmJdbcDriver18.jar" \
-  com.initialneko.qualityanalysis.cli.QualityAnalysisCli \
-  dm.jdbc.driver.DmDriver \
-  "jdbc:dm://127.0.0.1:5236/DAMENG" \
-  USER PASSWORD TEST CUSTOMER 10000
-```
-
-重点看：
-
-- 是否成功连接
-- 表名 / Schema 是否正确
-- rowCount 是否与预期一致
-- NULL / Distinct / Min / Max 是否明显合理
-- CLOB/BLOB 是否没有导致内存异常
-
-单表模式只打印控制台结果，不生成 Excel/HTML。
-
-## 八、再做正式报告模式测试
-
-参数格式：
-
-```text
-<driver-class> <jdbc-url> <user> <password> <database-label> <schema>
-<table1,table2,...> <output-root> [fetchSize]
-```
-
-示例：
-
-```bash
-java -cp "target/quality-analysis-0.1.0-SNAPSHOT.jar;target/dependency/*;D:/dm/DmJdbcDriver18.jar" \
+java -cp "quality-analysis.jar;lib/*" \
   com.initialneko.qualityanalysis.cli.QualityAnalysisCli \
   dm.jdbc.driver.DmDriver \
   "jdbc:dm://127.0.0.1:5236/DAMENG" \
   USER PASSWORD DM_TEST TEST \
-  "CUSTOMER,ORDERS" \
+  --table-file "config/tables.txt" \
   "D:/quality-runs" \
   10000
 ```
 
-其中：
+如果 `tables.txt` 全部使用完整的 `SCHEMA.TABLE`：
 
-```text
-database-label = 报告里展示的数据库标识，不是密码，也不参与 JDBC 连接
-table1,table2  = 同一个 Schema 下需要扫描的表
-output-root    = 所有 run 目录的根路径
-fetchSize      = 默认 10000，不传也可以
+```bash
+java -cp "quality-analysis.jar;lib/*" \
+  com.initialneko.qualityanalysis.cli.QualityAnalysisCli \
+  dm.jdbc.driver.DmDriver \
+  "jdbc:dm://127.0.0.1:5236/DAMENG" \
+  USER PASSWORD DM_TEST - \
+  --table-file "config/tables.txt" \
+  "D:/quality-runs" \
+  10000
 ```
 
-执行完成后控制台会打印本次 run 目录。
+`database-label` 只用于报告展示，不参与 JDBC 连接。
 
-## 九、检查任务目录
+## 八、运行结果检查
 
 例如：
 
@@ -208,184 +196,66 @@ D:/quality-runs/20260915_xxx/
 └── quality-profile.html
 ```
 
-首先看 `manifest.json`：
+重点确认：
 
-- status 是否为 `COMPLETED`
-- plannedTables 是否正确
-- successTables 是否正确
-- failedTables 是否为 0
-- 每张表是否有 execution 记录
+- `manifest.json` 中 planned/success/failed 表数正确；
+- 一张成功表对应一个 JSON；
+- 文件清单之外没有额外表结果；
+- Excel/HTML 与 JSON 中的 rowCount、NULL、Distinct 等一致；
+- HTML 可以直接双击打开；
+- 没有 Rule/PASS/FAIL/质量分。
 
-然后看 `tables/*.json`：
+## 九、失败恢复验证
 
-- 一张表一个文件
-- rowCount 正确
-- columns 数量正确
-- 字段关键 Profile 指标合理
-
-## 十、Excel 人工验收
-
-打开：
+可以故意在表清单中加入不存在的表：
 
 ```text
-quality-profile.xlsx
-```
-
-### 扫描概览
-
-确认：
-
-- 任务信息正确
-- 表数正确
-- 字段总数合理
-- 累计扫描行数合理
-- 潜在枚举 / 候选唯一键 / 常量字段数量可以解释
-
-### 字段质量明细
-
-建议抽查 5～10 个已知字段：
-
-- 表名 / 字段名
-- 类型
-- 是否主键
-- rowCount
-- NULL 数和 NULL 率
-- Distinct
-- 唯一率
-- Min / Max
-- 长度
-- 枚举 / TopN
-
-特别选择你已经知道实际数据特征的字段来比对。
-
-### 探查提示
-
-检查：
-
-- 状态码/性别等字段是否可能被识别为潜在枚举
-- 主键类字段是否可能识别为候选唯一键
-- 来源系统等固定值字段是否识别为常量
-
-注意：这里是 Profile Insight，不是质量异常。
-
-## 十一、HTML 人工验收
-
-直接双击：
-
-```text
-quality-profile.html
-```
-
-确认：
-
-- 不需要启动任何服务即可打开
-- 总体概览正确
-- 表目录可以搜索
-- 点击/展开表后字段信息完整
-- Excel 和 HTML 的同一个字段指标一致
-
-特别检查：
-
-> Excel 和 HTML 都来自同一个持久化 JSON，因此同一个字段的 rowCount、Distinct、NULL 等数据必须一致。
-
-## 十二、失败恢复测试（推荐）
-
-可以故意在表列表中加入一个不存在的表，例如：
-
-```text
-CUSTOMER,NOT_EXISTS,ORDERS
+CUSTOMER
+NOT_EXISTS
+ORDERS
 ```
 
 期望：
 
-- CUSTOMER 成功后立即有 JSON
-- NOT_EXISTS 被记录为失败
-- 程序继续尝试 ORDERS
-- 前面成功表的 JSON 不丢失
-- `manifest.json` 反映成功/失败数量
-- 如果至少有成功表，仍可以基于成功记录生成报告
+- CUSTOMER 完成后已经落盘；
+- NOT_EXISTS 被 manifest 记录失败；
+- ORDERS 继续执行；
+- 已完成表结果不丢失；
+- 如果至少有成功表，仍能生成报告。
 
-这可以验证“一张表做完立即保存”的核心设计是否真正有效。
+## 十、建议第一轮真实环境规模
 
-## 十三、建议第一轮实库验收规模
-
-不要第一次就全库扫描。建议：
+建议逐步扩大：
 
 ```text
-第 1 次：1 张小表
-第 2 次：2～3 张典型表
-第 3 次：包含 VARCHAR / NUMBER / DATE / CLOB / BLOB 的表
-第 4 次：20 万行左右真实表
-第 5 次：再逐步扩大到接近 100 万行
+1 张小表
+→ 2~3 张典型表
+→ 含 VARCHAR / NUMBER / DATE / CLOB / BLOB 的表
+→ 20 万行级表
+→ 再逐步扩大
 ```
 
-每一轮重点观察：
+观察：
 
-- 执行时间
-- Java 进程内存
-- 达梦数据库负载
-- JSON 大小
-- Excel/HTML 打开速度
+- 执行时间；
+- Java 内存；
+- 数据库负载；
+- JSON 大小；
+- Excel/HTML 打开速度。
 
-如果真实表出现明显内存压力，再根据证据调整 Distinct 策略；V1 不提前引入 HLL。
-
-## 十四、常见问题
-
-### 1. `ClassNotFoundException: dm.jdbc.driver.DmDriver`
-
-达梦 JDBC jar 没有加入 classpath，检查：
+## 十一、验收标准
 
 ```text
-D:/dm/DmJdbcDriver18.jar
-```
-
-路径是否正确。
-
-### 2. 找不到 Gson / POI 类
-
-先执行：
-
-```bash
-mvn dependency:copy-dependencies \
-  -DincludeScope=runtime \
-  -DoutputDirectory=target/dependency
-```
-
-并确认 classpath 中包含：
-
-```text
-target/dependency/*
-```
-
-### 3. 表不存在
-
-重点检查：
-
-- schema 是否正确
-- table 是否正确
-- 当前用户是否有 SELECT 权限
-- 达梦对象名大小写/引号规则是否和实际对象一致
-
-当前 `SqlTableName` 使用安全的普通标识符策略；如果现场大量使用带引号或中文对象名，需要单独扩展标识符引用方案。
-
-### 4. CLOB 很大
-
-默认只读取 CLOB 长度，不读取正文；不要为了第一轮验收开启 CLOB Preview。
-
-## 十五、验收通过标准
-
-第一版可以认为通过，至少满足：
-
-```text
-[ ] mvn clean test 成功
-[ ] manual-regression 成功
-[ ] 单表达梦扫描成功
-[ ] 多表报告模式成功
-[ ] 每张完成表立即生成 JSON
-[ ] manifest 记录正确
-[ ] Excel 三个 Sheet 正常
-[ ] HTML 双击可直接查看
-[ ] Excel/HTML 同字段指标一致
-[ ] CLOB/BLOB 没有出现明显内存问题
+[ ] bash scripts/mock-report.sh 成功
+[ ] mvn clean package 成功
+[ ] distribution 目录存在 jar/lib/src/config/docs/scripts
+[ ] ZIP 发行包生成成功
+[ ] 表清单文件解析正确
+[ ] 只扫描清单中指定的表
+[ ] 每张完成表立即保存 JSON
+[ ] manifest 成功/失败表数正确
+[ ] Excel 正常
+[ ] HTML 正常
+[ ] CLOB/BLOB 没有明显内存异常
 [ ] 不出现 Rule / PASS / FAIL / 质量分
 ```
