@@ -6,7 +6,7 @@
     <format>dir</format>
     <format>zip</format>
   </formats>
-  <includeBaseDirectory>true</includeBaseDirectory>
+  <includeBaseDirectory>false</includeBaseDirectory>
 
   <files>
     <file>
