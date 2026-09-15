@@ -2,7 +2,7 @@ name: Java 8 CI
 
 on:
   push:
-    branches: [ main, feature/profile-v1 ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
@@ -16,5 +16,5 @@ jobs:
           distribution: temurin
           java-version: '8'
           cache: maven
-      - name: Run tests
-        run: mvn -B test
+      - name: Test and package distribution
+        run: mvn -B clean package
