@@ -16,8 +16,12 @@ final class MockDatasets {
     private MockDatasets() {}
 
     static TableProfile customers() {
+        return customers(richTestOptions());
+    }
+
+    static TableProfile customers(ProfileOptions options) {
         TableMetadata metadata = customerMetadata();
-        ProfileEngine engine = new ProfileEngine(metadata, richTestOptions());
+        ProfileEngine engine = new ProfileEngine(metadata, options);
         for (int i = 1; i <= 200; i++) {
             String status;
             if (i == 197) status = " active ";
@@ -37,13 +41,17 @@ final class MockDatasets {
     }
 
     static TableProfile orders() {
+        return orders(richTestOptions());
+    }
+
+    static TableProfile orders(ProfileOptions options) {
         TableMetadata metadata = new TableMetadata("TEST", "ORDERS", Arrays.asList(
                 col(1, "ORDER_ID", Types.BIGINT, "BIGINT", false, true, ValueFamily.NUMBER),
                 col(2, "CUSTOMER_ID", Types.BIGINT, "BIGINT", false, false, ValueFamily.NUMBER),
                 col(3, "GENDER", Types.VARCHAR, "VARCHAR", true, false, ValueFamily.STRING),
                 col(4, "ORDER_STATUS", Types.VARCHAR, "VARCHAR", true, false, ValueFamily.STRING)
         ));
-        ProfileEngine engine = new ProfileEngine(metadata, richTestOptions());
+        ProfileEngine engine = new ProfileEngine(metadata, options);
         for (int i = 1; i <= 120; i++) {
             String gender = i % 3 == 0 ? "U" : (i % 2 == 0 ? "F" : "M");
             String status = i % 5 == 0 ? "CANCELLED" : (i % 2 == 0 ? "DONE" : "WAITING");
