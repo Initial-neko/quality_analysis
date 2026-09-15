@@ -1,43 +1,45 @@
-# V1 Design — Profile Only
+# V1 设计说明 —— Profile Only
 
-## Scope
+## 一、范围
 
-V1 is intentionally profile-only. It does not contain configured field rules, rule bindings, validation statuses, or rule-result models.
+V1 明确只做 Profile（数据画像/探查），不包含字段级 Rule、RuleBinding、校验状态或 RuleResult。
 
-The complete Profile + Rule implementation is preserved in:
+完整的 Profile + Rule 版本保留在：
 
 ```text
 archive/profile-with-rules
 ```
 
-The active V1 branch is:
+当前 V1 的开发实现来自：
 
 ```text
 feature/profile-only-v1
 ```
 
-## Constraints
+合并后 `main` 作为正式 V1 主线。
+
+## 二、设计约束
 
 - Java 8
-- minimal dependencies
-- DM is the first database
-- most tables are around 200k rows; current ceiling is roughly 1M rows
-- one table scan should produce all enabled profile metrics
-- no application paging
-- no primary-key ordering requirement
-- LOB content must not be materialized by default
-- optional exploratory metrics must be switchable
-- one completed table must be persisted immediately
-- reports must read persisted records rather than rescan the source database
+- 尽量少的依赖
+- 第一适配数据库为达梦 DM
+- 常见表约 20 万行，当前按约 100 万行以内设计
+- 一张表只扫描一次，完成所有已开启的 Profile 指标
+- 不做应用层分页
+- 不要求主键排序
+- 默认不物化 LOB 正文
+- 非必要探查能力必须可以关闭
+- 一张表完成后必须立即落盘
+- 报告必须读取持久化记录，不能重新扫描源库
 
-## End-to-end path
+## 三、端到端链路
 
-`JdbcTableProfiler` performs one forward-only scan per table. `ProfileRunService` executes tables sequentially and persists each completed result before starting the next table.
+`JdbcTableProfiler` 对每张表执行一次 forward-only 扫描。`ProfileRunService` 按顺序处理多张表，并在进入下一张表之前先保存当前表结果。
 
 ```text
 Database
    |
-ResultSet (forward only + fetchSize)
+ResultSet（forward only + fetchSize）
    |
 ProfileEngine
    |
@@ -45,68 +47,70 @@ TableProfile
    |
 TableProfileRecord
    |
-JSON per table + RunManifest
+每表 JSON + RunManifest
    |
    +-- ExcelProfileReportWriter
    `-- HtmlProfileReportWriter
 ```
 
-Fetch boundaries are JDBC/driver transport details; they are not profile boundaries.
+JDBC fetch 边界只是驱动层的数据传输细节，不是 Profile 的业务边界。
 
-## JDBC scan path
+## 四、JDBC 扫描路径
 
-1. best-effort `DatabaseMetaData.getPrimaryKeys()`
-2. `SELECT * FROM schema.table`
-3. `TYPE_FORWARD_ONLY` + `CONCUR_READ_ONLY`
-4. configurable `Statement.setFetchSize(...)`
-5. `ResultSetMetaData` -> `TableMetadata` / `ColumnMetadata`
-6. every cell is consumed once by `ProfileEngine`
-7. final in-memory table output is `TableProfile`
-8. the completed table is converted to `TableProfileRecord` and written immediately
+一张表的执行过程：
 
-There is no OFFSET/LIMIT paging and no `ORDER BY` primary key requirement.
+1. 尽力通过 `DatabaseMetaData.getPrimaryKeys()` 获取主键信息；
+2. 执行 `SELECT * FROM schema.table`；
+3. 使用 `TYPE_FORWARD_ONLY` + `CONCUR_READ_ONLY`；
+4. 使用可配置的 `Statement.setFetchSize(...)`；
+5. `ResultSetMetaData` 转为 `TableMetadata / ColumnMetadata`；
+6. 每个 cell 只被 `ProfileEngine` 消费一次；
+7. 扫描完成得到 `TableProfile`；
+8. 转成 `TableProfileRecord` 并立即保存。
 
-## Core models
+V1 不使用 OFFSET/LIMIT，也不需要 `ORDER BY` 主键。
+
+## 五、核心模型
 
 ### ColumnMetadata
 
-Physical field metadata:
+表示字段物理元数据：
 
-- column name / label
-- JDBC type
-- database-native type name
+- 字段名 / label
+- JDBC 类型
+- 数据库原生类型名
 - precision / scale
-- nullable
-- declared-primary-key label
-- normalized `ValueFamily`
+- 是否允许 NULL
+- 数据库声明的主键标记
+- 归一化后的 `ValueFamily`
 
 ### ColumnProfile
 
-Observed field profile. It answers “what does the data currently look like?” rather than “is the data valid?”.
+表示“字段实际数据长什么样”，而不是“字段是否符合业务规则”。
 
-Core metrics include:
+核心指标包括：
 
-- row / non-null / null counts
-- blank and semantic-null counts
-- exact distinct count
-- uniqueness
-- low-cardinality values/frequencies
-- min/max
-- min/max/average length
-- candidate key
-- constant / quasi-constant
-- potential enum
+- row / non-null / null 数量
+- 空字符串、语义空值数量
+- 精确 Distinct
+- 唯一率
+- 低基数值及频次
+- Min / Max
+- 最小/最大/平均长度
+- 候选唯一键
+- 常量 / 准常量
+- 潜在枚举
 
-Optional fields may include:
+可选指标包括：
 
-- pattern fingerprints
-- string-shape statistics
-- case-variant groups
-- set fingerprint / MinHash sketch
+- Pattern 指纹
+- 字符组成统计
+- 大小写变体
+- Set Fingerprint / MinHash
 
 ### TableProfile
 
-One table scan result used inside the profiling layer:
+Profile 引擎内部的一张表扫描结果：
 
 ```text
 TableMetadata
@@ -116,96 +120,120 @@ List<ColumnProfile>
 
 ### TableProfileRecord
 
-Stable persisted/report DTO. It contains the report-facing subset of table/column metadata and observed metrics. Reports consume this model so report concerns do not leak into the profiling core.
+稳定的持久化/报告 DTO。
+
+它只保存报告和后续处理需要的字段元数据与 Profile 指标，避免把文件格式、Excel/HTML 等关注点侵入 Profile 核心。
 
 ### RunManifest
 
-Durable run-level metadata:
+一次扫描任务的持久化元数据：
 
-- run id
-- non-sensitive database label
-- start/end time and status
-- planned/success/failed table counts
-- ProfileOptions snapshot
-- one execution entry per attempted table
+- runId
+- 非敏感数据库标签
+- 开始/结束时间
+- 任务状态
+- 计划表数 / 成功表数 / 失败表数
+- ProfileOptions 快照
+- 每张尝试扫描表的执行记录
 
-Credentials are never stored.
+**不会保存数据库用户名密码之外的敏感连接凭据，尤其不会保存密码。**
 
-## Persistence boundary
+## 六、持久化边界
 
-V1 uses one JSON file per completed table:
+V1 一张完成的表保存一个 JSON：
 
 ```text
 <run>/tables/<schema>.<table>.json
 ```
 
-and one run manifest:
+一次任务保存一个：
 
 ```text
 <run>/manifest.json
 ```
 
-Files are written through `*.tmp` and replaced atomically where the filesystem supports it. This protects already-completed tables when a later scan fails or the process is interrupted.
+文件先写 `*.tmp`，在文件系统支持时再使用原子替换写正式文件。这样即使后面的表失败或进程中断，已经完成的表结果仍然安全存在。
 
-V1 does not use JSONL because the execution/retry unit is a table and individual replacement matters. It does not use SQLite because there is no current history/query/multi-user requirement that justifies database deployment and schema migration.
+### 为什么不用 JSONL
 
-## Exact distinct
+JSONL 很适合追加事件，但我们的执行和重跑单位是“表”。如果一张表重跑，JSONL 需要追加新版本后再去重，或者重写整个文件；一表一 JSON 更直接。
 
-At the current 200k–1M scale, V1 uses exact `HashSet` distinct tracking for enabled columns. This keeps results deterministic and makes uniqueness / enum discovery straightforward.
+### 为什么暂时不用 SQLite
 
-Memory control principles:
+SQLite 在以下场景会有价值：
 
-- process tables sequentially by default
-- persist a completed table before scanning the next one
-- release accumulators after a table result is written
-- do not distinct-profile LOB content
-- low-cardinality frequency maps stop growing after their configured limit
-- optional relationship sketches can be disabled
+- 多次历史任务查询
+- 多用户共享
+- 跨任务趋势分析
+- 大量条件查询
+- 并发写入
 
-Do not add HLL until real measurements justify it.
+当前 V1 只需要本地可靠落盘和可携带交付，引入 SQLite 会增加部署、schema、迁移和兼容性成本，因此暂时不用。
 
-## Low-cardinality behavior
+## 七、精确 Distinct
 
-Default behavior:
+当前 20 万～100 万行的目标规模下，V1 对开启 Distinct 的普通字段使用精确 `HashSet`。
+
+优点：
+
+- 结果确定
+- 唯一率容易计算
+- 潜在枚举容易判断
+- 不引入 HLL 等额外复杂度
+
+内存控制原则：
+
+- 默认按表串行处理
+- 表完成后先保存，再进入下一张表
+- 表结果保存后释放本表 accumulator
+- LOB 正文不做 Distinct
+- 低基数频次 Map 到达上限后不再无限增长
+- 关系指纹等可选能力默认关闭
+
+没有实际内存数据证明有必要前，不引入 HLL。
+
+## 八、低基数处理
+
+默认逻辑：
 
 ```text
-distinct <= 20      emit all values + count + ratio
-20 < distinct <= N  retain bounded low-cardinality frequencies / Top N
-high cardinality    do not retain all frequencies
+distinct <= 20      输出全部值 + 数量 + 占比
+20 < distinct <= N  保留有限低基数频次 / Top N
+高基数字段           不长期保存全部值频次
 ```
 
-A low-cardinality field is only a discovery signal (e.g. potential enum). It is not a quality failure.
+低基数只是探查结果，例如“潜在枚举”，不是质量异常。
 
-## LOB behavior
+## 九、LOB 处理
 
-CLOB/NCLOB:
+### CLOB / NCLOB
 
-- use `Clob.length()`
-- skip content by default
-- optional bounded prefix preview only when explicitly enabled
+- 调用 `Clob.length()`
+- 默认不读取正文
+- 只有显式开启时才读取有限前缀预览
 
-BLOB:
+### BLOB
 
-- use `Blob.length()`
-- never materialize bytes for profiling
+- 调用 `Blob.length()`
+- 不把字节内容物化到内存
 
-LOB content does not participate in distinct/uniqueness.
+LOB 正文不参与 Distinct / 唯一率。
 
-## Optional exploration
+## 十、可选探查能力
 
-The following are not required for the minimal V1 result and are disabled by default:
+以下不是 Minimal Profile 的必要结果，默认关闭：
 
-- pattern fingerprint
-- character-shape statistics
-- case variants
-- relationship fingerprint / MinHash
-- CLOB preview
+- Pattern 指纹
+- 字符组成统计
+- 大小写变体
+- 关系 Fingerprint / MinHash
+- CLOB Preview
 
-They remain useful for ad-hoc exploration, but report V1 must not depend on them.
+它们可以用于专项探查，但 V1 Excel/HTML 报告不能依赖这些能力才能正常工作。
 
-## Reporting boundary
+## 十一、报告边界
 
-Report generation is downstream from persistence:
+报告位于持久化之后：
 
 ```text
 manifest.json + tables/*.json
@@ -214,49 +242,59 @@ manifest.json + tables/*.json
         `-- quality-profile.html
 ```
 
-Writers only format/aggregate saved profile facts. They do not query the source database, calculate a second copy of field metrics, or invent validation statuses.
+报告 Writer 只能格式化和汇总已经保存的 Profile 数据：
 
-Excel V1:
+- 不重新查询数据库
+- 不重新扫描原始数据
+- 不再计算第二套字段指标
+- 不生成不存在的业务校验状态
 
-- scan overview
-- field detail: one row per database/schema/table/field
-- profile discovery/enum insights
+### Excel V1
 
-HTML V1:
+- 扫描概览
+- 字段质量明细：一行一个字段
+- 探查提示 / 枚举信息
 
-- overall run overview
-- searchable table directory
-- table overview
-- per-table field details
+### HTML V1
 
-Apache POI 5.2.2 is used only for XLSX rendering. Gson is used only for JSON persistence. The profiling core remains standard Java/JDBC.
+- 整体任务概览
+- 可搜索表目录
+- 表级概览
+- 单表字段详情
 
-## Execution service
+Apache POI 5.2.2 只用于 XLSX 渲染；Gson 只用于 JSON 持久化。Profile 核心仍然是 Java/JDBC。
 
-`ProfileRunService` owns the sequence:
+## 十二、执行服务
 
-1. create run directory and RUNNING manifest;
-2. scan one table;
-3. persist its `TableProfileRecord`;
-4. update manifest immediately;
-5. continue to the next table;
-6. finish manifest;
-7. generate Excel and HTML from persisted records.
+`ProfileRunService` 负责：
 
-The current implementation continues after a table-level `SQLException`. If every table fails, the first SQL exception is rethrown after the durable run metadata/report attempt.
+1. 创建 run 目录和 RUNNING 状态 manifest；
+2. 扫描一张表；
+3. 保存该表 `TableProfileRecord`；
+4. 立即更新 manifest；
+5. 继续下一张表；
+6. 所有表结束后更新最终 manifest；
+7. 从持久化记录生成 Excel 和 HTML。
 
-## Deferred
+当前实现遇到单表 `SQLException` 后会继续下一张表；如果所有表都失败，会在持久化任务信息后重新抛出第一条 SQL 异常。
 
-Do not add these to V1 unless the scope changes:
+## 十三、明确延期
 
-- configured Rule engine
-- dictionary/range/regex validation
-- PASS/WARN/FAIL quality scoring
-- HLL/approximate distinct
-- sampling
-- broad parallel scans
-- DB-side pushdown
-- historical trend database
-- remediation workflow
+除非范围变化，V1 不加入：
 
-The previous configured-rule implementation remains available in `archive/profile-with-rules` for future reuse.
+- Rule 规则引擎
+- 字典 / 范围 / 正则校验
+- PASS / WARN / FAIL
+- 质量评分
+- HLL / 近似 Distinct
+- Sampling
+- 大规模并行扫描
+- DB 侧规则下推
+- 历史趋势数据库
+- 整改工作流
+
+Rule 相关实现继续保留在：
+
+```text
+archive/profile-with-rules
+```
