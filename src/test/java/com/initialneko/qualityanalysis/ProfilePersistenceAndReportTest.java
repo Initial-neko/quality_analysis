@@ -16,7 +16,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 
 import static org.junit.Assert.*;
 
@@ -77,8 +76,14 @@ public class ProfilePersistenceAndReportTest {
             assertNotNull(workbook.getSheet("扫描概览"));
             Sheet detail = workbook.getSheet("字段质量明细");
             assertNotNull(detail);
+            assertEquals("主明细应保持精简，避免再次膨胀", 17, detail.getRow(0).getLastCellNum());
             assertTrue(containsCell(detail, "CUSTOMER"));
             assertTrue(containsCell(detail, "PHONE"));
+            assertTrue(containsCell(detail, "空串/语义空"));
+            assertTrue(containsCell(detail, "探查提示"));
+            assertFalse(containsCell(detail, "JDBC类型"));
+            assertFalse(containsCell(detail, "类型族"));
+            assertFalse(containsCell(detail, "LOB内容跳过"));
             assertNotNull(workbook.getSheet("探查提示"));
         } finally {
             workbook.close();
@@ -90,6 +95,10 @@ public class ProfilePersistenceAndReportTest {
         assertTrue(htmlText.contains("CUSTOMER"));
         assertTrue(htmlText.contains("PHONE"));
         assertTrue(htmlText.contains("潜在枚举"));
+        assertTrue(htmlText.contains("Distinct/唯一率"));
+        assertTrue(htmlText.contains("<div>Min："));
+        assertTrue(htmlText.contains("<div>Max："));
+        assertTrue(htmlText.contains("class=\"values\""));
     }
 
     private static TableProfileRecord.ColumnRecord find(TableProfileRecord record, String column) {
