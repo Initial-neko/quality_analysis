@@ -1,112 +1,262 @@
-# Design
+# V1 Design — Profile Only
+
+## Scope
+
+V1 is intentionally profile-only. It does not contain configured field rules, rule bindings, validation statuses, or rule-result models.
+
+The complete Profile + Rule implementation is preserved in:
+
+```text
+archive/profile-with-rules
+```
+
+The active V1 branch is:
+
+```text
+feature/profile-only-v1
+```
 
 ## Constraints
 
-- Java 8, minimal dependencies.
-- Most tables are around 200k rows; current ceiling is roughly 1M rows.
-- DM is the first database, but scanning/profiling/rules remain standard-JDBC based.
-- A profile must be useful before business rules exist.
-- Optional discovery must not become mandatory CPU/memory work.
+- Java 8
+- minimal dependencies
+- DM is the first database
+- most tables are around 200k rows; current ceiling is roughly 1M rows
+- one table scan should produce all enabled profile metrics
+- no application paging
+- no primary-key ordering requirement
+- LOB content must not be materialized by default
+- optional exploratory metrics must be switchable
+- one completed table must be persisted immediately
+- reports must read persisted records rather than rescan the source database
 
-## One database scan
+## End-to-end path
 
-`JdbcTableProfiler` performs one forward scan:
+`JdbcTableProfiler` performs one forward-only scan per table. `ProfileRunService` executes tables sequentially and persists each completed result before starting the next table.
+
+```text
+Database
+   |
+ResultSet (forward only + fetchSize)
+   |
+ProfileEngine
+   |
+TableProfile
+   |
+TableProfileRecord
+   |
+JSON per table + RunManifest
+   |
+   +-- ExcelProfileReportWriter
+   `-- HtmlProfileReportWriter
+```
+
+Fetch boundaries are JDBC/driver transport details; they are not profile boundaries.
+
+## JDBC scan path
 
 1. best-effort `DatabaseMetaData.getPrimaryKeys()`
 2. `SELECT * FROM schema.table`
 3. `TYPE_FORWARD_ONLY` + `CONCUR_READ_ONLY`
 4. configurable `Statement.setFetchSize(...)`
-5. typed metadata from `ResultSetMetaData`
-6. read each cell once through `JdbcValueReader`
-7. send that same value to both `ProfileEngine` and `RuleEngine`
-8. finish profile, then let profile-aware rules (notably `UniqueRule`) reuse the result
+5. `ResultSetMetaData` -> `TableMetadata` / `ColumnMetadata`
+6. every cell is consumed once by `ProfileEngine`
+7. final in-memory table output is `TableProfile`
+8. the completed table is converted to `TableProfileRecord` and written immediately
 
-There is no OFFSET/LIMIT/keyset paging and no PK ordering. PK metadata is only a label.
+There is no OFFSET/LIMIT paging and no `ORDER BY` primary key requirement.
 
-## Typed values and LOBs
+## Core models
 
-Normal JDBC values stay typed. Canonical strings are created only where a set/string operation needs them. Numeric/date comparisons use typed values, avoiding lexical errors such as `100 < 2`.
+### ColumnMetadata
 
-CLOB/BLOB are converted to lightweight `LobValue` descriptors. Default CLOB behavior is length only; an optional prefix preview is bounded. BLOB bytes are never materialized. LOB previews never participate in distinct/uniqueness.
+Physical field metadata:
 
-## Minimal profile
+- column name / label
+- JDBC type
+- database-native type name
+- precision / scale
+- nullable
+- declared-primary-key label
+- normalized `ValueFamily`
 
-The default profile keeps only signals with high value/cost ratio:
+### ColumnProfile
 
-- physical null / blank / semantic-null counts
-- exact distinct + uniqueness
-- low-cardinality value frequencies and potential enum values
-- numeric/date min/max
-- string/LOB lengths
-- declared PK + candidate unique-key signal
-- constant/quasi-constant signal
+Observed field profile. It answers “what does the data currently look like?” rather than “is the data valid?”.
 
-Optional and disabled by default:
+Core metrics include:
 
-- format Pattern fingerprints
-- character-shape statistics
-- case-variant grouping
-- set fingerprint / MinHash relationship discovery
-- CLOB text preview
+- row / non-null / null counts
+- blank and semantic-null counts
+- exact distinct count
+- uniqueness
+- low-cardinality values/frequencies
+- min/max
+- min/max/average length
+- candidate key
+- constant / quasi-constant
+- potential enum
 
-Every optional feature has an explicit switch in `ProfileOptions`.
+Optional fields may include:
 
-## Memory behavior
+- pattern fingerprints
+- string-shape statistics
+- case-variant groups
+- set fingerprint / MinHash sketch
 
-Rows are not retained. Accumulator state survives across JDBC fetch boundaries.
+### TableProfile
 
-Exact distinct uses one `HashSet<String>` per enabled column. `UniqueRule` deliberately reuses this profile state and never creates another distinct set. Low-cardinality frequency maps are discarded after their configured limit is exceeded.
-
-At the current 200k~1M scale this is preferred over introducing HLL/approximate cardinality before measurements require it.
-
-## Rule layer
-
-A configured rule is bound to one column through `RuleBinding`.
-
-`ColumnRule` lifecycle:
+One table scan result used inside the profiling layer:
 
 ```text
-start(ColumnMetadata, ProfileOptions)
-        |
-accept(rawValue)  <- zero or more values from the same JDBC scan
-        |
-finish(ColumnProfile)
-        |
-RuleResult
+TableMetadata
+rowCount
+List<ColumnProfile>
 ```
 
-This supports two kinds of rules without separate architectures:
+### TableProfileRecord
 
-- streaming rules: Regex, Dictionary, Range, custom business logic
-- profile-backed rules: Unique, or future thresholds that can reuse aggregate profile state
+Stable persisted/report DTO. It contains the report-facing subset of table/column metadata and observed metrics. Reports consume this model so report concerns do not leak into the profiling core.
 
-Built-ins are intentionally narrow: `NullRateRule`, `DictionaryRule`, `RangeRule`, `RegexRule`, `UniqueRule`.
+### RunManifest
 
-Missing-value policy is separated from semantic rules: Regex/Dictionary/Range skip missing values; `NullRateRule` owns missing-value validation.
+Durable run-level metadata:
 
-## Relationship discovery
+- run id
+- non-sensitive database label
+- start/end time and status
+- planned/success/failed table counts
+- ProfileOptions snapshot
+- one execution entry per attempted table
 
-Relationship discovery is optional. When enabled, the exact-distinct first-seen event also updates three 64-bit set aggregates and one-permutation MinHash bins. No second set is created.
+Credentials are never stored.
 
-Candidates are hints only:
+## Persistence boundary
 
-- `SHARED_DICTIONARY`
-- `SAME_VALUE_DOMAIN`
-- `POTENTIAL_RELATION`
+V1 uses one JSON file per completed table:
 
-## Extensibility rule
+```text
+<run>/tables/<schema>.<table>.json
+```
 
-Do not add a new framework for a new validation. Prefer implementing `ColumnRule` (or extending `AbstractColumnRule`) and binding it through `RuleBinding`. A custom rule should:
+and one run manifest:
 
-- keep bounded state
-- never retain complete rows
-- never issue its own database query
-- bound invalid samples
-- reuse `ColumnProfile` where an aggregate already exists
-- add deterministic mock data and regression assertions
+```text
+<run>/manifest.json
+```
 
-See `RULES.md` for the implementation template.
+Files are written through `*.tmp` and replaced atomically where the filesystem supports it. This protects already-completed tables when a later scan fails or the process is interrupted.
 
-## Deferred features
+V1 does not use JSONL because the execution/retry unit is a table and individual replacement matters. It does not use SQLite because there is no current history/query/multi-user requirement that justifies database deployment and schema migration.
 
-Do not add HLL, sampling, broad parallel scans, database-side rule pushdown, persistent caches, complex ID-card/domain validators, or a generic rule DSL until a real requirement/measurement justifies them.
+## Exact distinct
+
+At the current 200k–1M scale, V1 uses exact `HashSet` distinct tracking for enabled columns. This keeps results deterministic and makes uniqueness / enum discovery straightforward.
+
+Memory control principles:
+
+- process tables sequentially by default
+- persist a completed table before scanning the next one
+- release accumulators after a table result is written
+- do not distinct-profile LOB content
+- low-cardinality frequency maps stop growing after their configured limit
+- optional relationship sketches can be disabled
+
+Do not add HLL until real measurements justify it.
+
+## Low-cardinality behavior
+
+Default behavior:
+
+```text
+distinct <= 20      emit all values + count + ratio
+20 < distinct <= N  retain bounded low-cardinality frequencies / Top N
+high cardinality    do not retain all frequencies
+```
+
+A low-cardinality field is only a discovery signal (e.g. potential enum). It is not a quality failure.
+
+## LOB behavior
+
+CLOB/NCLOB:
+
+- use `Clob.length()`
+- skip content by default
+- optional bounded prefix preview only when explicitly enabled
+
+BLOB:
+
+- use `Blob.length()`
+- never materialize bytes for profiling
+
+LOB content does not participate in distinct/uniqueness.
+
+## Optional exploration
+
+The following are not required for the minimal V1 result and are disabled by default:
+
+- pattern fingerprint
+- character-shape statistics
+- case variants
+- relationship fingerprint / MinHash
+- CLOB preview
+
+They remain useful for ad-hoc exploration, but report V1 must not depend on them.
+
+## Reporting boundary
+
+Report generation is downstream from persistence:
+
+```text
+manifest.json + tables/*.json
+        |
+        +-- quality-profile.xlsx
+        `-- quality-profile.html
+```
+
+Writers only format/aggregate saved profile facts. They do not query the source database, calculate a second copy of field metrics, or invent validation statuses.
+
+Excel V1:
+
+- scan overview
+- field detail: one row per database/schema/table/field
+- profile discovery/enum insights
+
+HTML V1:
+
+- overall run overview
+- searchable table directory
+- table overview
+- per-table field details
+
+Apache POI 5.2.2 is used only for XLSX rendering. Gson is used only for JSON persistence. The profiling core remains standard Java/JDBC.
+
+## Execution service
+
+`ProfileRunService` owns the sequence:
+
+1. create run directory and RUNNING manifest;
+2. scan one table;
+3. persist its `TableProfileRecord`;
+4. update manifest immediately;
+5. continue to the next table;
+6. finish manifest;
+7. generate Excel and HTML from persisted records.
+
+The current implementation continues after a table-level `SQLException`. If every table fails, the first SQL exception is rethrown after the durable run metadata/report attempt.
+
+## Deferred
+
+Do not add these to V1 unless the scope changes:
+
+- configured Rule engine
+- dictionary/range/regex validation
+- PASS/WARN/FAIL quality scoring
+- HLL/approximate distinct
+- sampling
+- broad parallel scans
+- DB-side pushdown
+- historical trend database
+- remediation workflow
+
+The previous configured-rule implementation remains available in `archive/profile-with-rules` for future reuse.

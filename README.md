@@ -1,173 +1,154 @@
 # quality_analysis
 
-Lightweight **Java 8** JDBC data-quality profiler and validation engine. Current target tables are mostly around 200k rows and below 1M rows.
+Lightweight Java 8 JDBC data profiling toolkit. V1 focuses on **profile only**: read table data once, calculate useful field/table profiles, persist each completed table immediately, then generate Excel/HTML reports from the saved records.
 
-The database is only the streaming data source; profiling and configured quality rules run locally in Java so the same engine can later be reused across DM, Oracle, MySQL, PostgreSQL, etc.
+The database is only the streaming data source. Profiling runs locally in Java so the same core can later be reused across DM, Oracle, MySQL, PostgreSQL, etc.
 
-## Current scope
+## V1 scope
 
-- Java 8; zero third-party production runtime dependencies
-- `TYPE_FORWARD_ONLY` + `CONCUR_READ_ONLY` + configurable JDBC `fetchSize` (default 10000)
-- no application paging, OFFSET/LIMIT, or `ORDER BY` primary key
-- best-effort `DatabaseMetaData.getPrimaryKeys()`; PK is a label, never a scan prerequisite
-- rows are consumed immediately; no application-side `List<10000 rows>`
-- CLOB/BLOB have explicit bounded behavior
-- profiling and configured rules share **one JDBC scan**
-- deterministic mock data is the permanent regression baseline
+V1 deliberately contains **no configured Rule engine**. Rules need field-specific business configuration; that is not required for the first delivery.
 
-## Minimal profile is the default
+The rule-capable implementation is preserved in branch:
 
-`ProfileOptions.defaults()` / `ProfileOptions.minimal()` intentionally keep only high-value signals enabled:
-
-| Capability | Default |
-|---|---|
-| physical NULL / blank / semantic-null counts | ON |
-| exact distinct / uniqueness | ON |
-| low-cardinality value frequencies | ON |
-| `distinct <= 20` full enum values | ON |
-| numeric/date min-max | ON |
-| string/LOB length statistics | ON |
-| format Pattern profile (`D11`, `L2D9`...) | OFF |
-| character-shape statistics | OFF |
-| case-variant grouping | OFF |
-| relationship fingerprint / MinHash | OFF |
-| CLOB text preview | OFF (`clobPreviewChars=0`) |
-| BLOB content loading | OFF by design |
-
-Optional profiling is explicitly enabled only when needed:
-
-```java
-ProfileOptions options = ProfileOptions.builder()
-        .fetchSize(10_000)
-        .patternProfileEnabled(true)
-        .relationshipFingerprintEnabled(true)
-        .build();
+```text
+archive/profile-with-rules
 ```
 
-Expensive/high-cardinality work can also be disabled explicitly, for example:
+Do not re-introduce Rule classes into V1 unless the product scope changes.
 
-```java
-ProfileOptions options = ProfileOptions.builder()
-        .distinctEnabled(false)
-        .valueFrequencyEnabled(false)
-        .rangeEnabled(true)
-        .lengthEnabled(true)
-        .build();
-```
-
-`valueFrequencyEnabled(true)` and `relationshipFingerprintEnabled(true)` require exact distinct to be enabled because they reuse the same distinct state rather than creating another set.
-
-## Data flow
+## Scan + persistence model
 
 ```text
 DM / JDBC database
       |
-      | SELECT * / forward-only ResultSet / fetchSize
+      | SELECT *
+      | TYPE_FORWARD_ONLY + CONCUR_READ_ONLY
+      | Statement.setFetchSize(...)
       v
 JdbcTableProfiler
-      |-- ResultSetMetaData -> typed ColumnMetadata
-      |-- DatabaseMetaData.getPrimaryKeys() -> optional PK label
+      |
       v
-one raw cell
-      |-----------------------------|
-      v                             v
-ProfileEngine                    RuleEngine
-actual data shape               configured expectation
-      |                             |
-      |-----------------------------|
-                    v
-              AnalysisResult
-          TableProfile + RuleResult[]
+ProfileEngine
+      |
+      v
+TableProfile
+      |
+      | one table completed -> persist immediately
+      v
+runs/<runId>/tables/<schema>.<table>.json
+      |
+      +--> quality-profile.xlsx
+      `--> quality-profile.html
 ```
 
-JDBC/DM handles fetch buffering internally. Fetch boundaries never define profile boundaries; accumulator state survives until the complete table scan finishes.
+There is no application-side paging, OFFSET/LIMIT paging, or `ORDER BY` primary key. JDBC/DM handles fetch buffering; rows are consumed immediately and are not accumulated into a `List<10000 rows>`.
 
-## Built-in configured rules
+Primary-key metadata is read best-effort through `DatabaseMetaData.getPrimaryKeys()`. PK is only a metadata label and is never a scan prerequisite.
 
-V1 contains five deliberately small rules:
+## Durable run directory
 
-| Rule | Meaning |
-|---|---|
-| `NullRateRule` | maximum physical/blank/semantic-null rate |
-| `DictionaryRule` | every non-missing value must belong to a configured set |
-| `RangeRule` | inclusive NUMBER or DATE_TIME range |
-| `RegexRule` | every non-missing normalized value must fully match one Java regex |
-| `UniqueRule` | minimum uniqueness; reuses the profiler distinct accumulator |
-
-Example:
-
-```java
-List<RuleBinding> rules = Arrays.asList(
-        new RuleBinding("CUSTOMER_ID", new UniqueRule("customer-id-unique")),
-        new RuleBinding("GENDER", new DictionaryRule(
-                "gender-dict", Arrays.asList("M", "F", "U"))),
-        new RuleBinding("AGE", new RangeRule("age-range", "0", "120")),
-        new RuleBinding("PHONE", new RegexRule(
-                "phone-format", "^1[3-9]\\d{9}$")),
-        new RuleBinding("OPTIONAL_CODE", new NullRateRule(
-                "optional-null-rate", 0.05d))
-);
-
-AnalysisResult result = new QualityAnalyzer().analyzeTable(
-        connection, "SCHEMA_NAME", "CUSTOMER",
-        ProfileOptions.defaults(), rules);
-```
-
-A regex is a **format rule only**. For example `^\\d{17}[0-9Xx]$` can check the shape of a Chinese ID number, but checksum, birth-date and administrative-code validation should be implemented as a custom rule rather than hidden inside the regex rule.
-
-Rules skip missing values when the rule has another responsibility (Regex/Dictionary/Range). Missing-value policy belongs to `NullRateRule`, preventing the same missing cell from being reported as several unrelated failures.
-
-Rule results contain the column, checked/invalid counts, valid/invalid rate, a short message and at most a bounded number of invalid samples.
-
-## DM / 达梦
-
-The main module does not compile against DM-specific classes. Put the DM JDBC jar on the runtime classpath.
-
-Recommended behavior:
-
-- `clobAsString=false` (DM default): keep CLOB detectable as a LOB rather than silently turning it into VARCHAR.
-- `LobMode=1` (DM default): LOB content is fetched on demand rather than fully cached with the result set.
-- `Statement.setFetchSize(...)` is used for driver/database result prefetch behavior.
-- PK labels are read through standard `DatabaseMetaData.getPrimaryKeys()` when available.
-
-### LOB policy
-
-| type | behavior |
-|---|---|
-| CLOB / NCLOB | length only by default; optional bounded prefix preview |
-| BLOB | length only; bytes are never loaded |
-| LONGVARCHAR | CLOB strategy if the driver returns `Clob`, otherwise normal string handling |
-| normal CHAR/VARCHAR | normal profile/rules |
-
-LOB content never participates in distinct/uniqueness. A CLOB preview is informational only and never becomes a fake distinct key.
-
-## Low-cardinality enum discovery
-
-With default options:
-
-- final `distinct <= 20`: emit every retained value with exact frequency and ratio
-- `20 < distinct <= 100`: retain low-cardinality values and emit Top N
-- above the configured low-cardinality limit: discard the frequency map to protect memory while exact distinct can continue
-
-This makes fields such as status/gender/type immediately useful even before a formal data dictionary has been configured.
-
-## Optional relationship discovery
-
-Relationship discovery is **off by default**. When `relationshipFingerprintEnabled(true)` is enabled, each newly observed distinct value updates:
+Each scan run is self-contained:
 
 ```text
-distinctCount
-hashSum64
-hashXor64
-secondHashSum64
-one-permutation MinHash bins
+runs/20260915_001/
+├── manifest.json
+├── tables/
+│   ├── TEST.CUSTOMER.json
+│   ├── TEST.ORDERS.json
+│   └── ...
+├── quality-profile.xlsx
+└── quality-profile.html
 ```
 
-Matching low-cardinality sets can become `SHARED_DICTIONARY` candidates; higher-cardinality exact matches become `SAME_VALUE_DOMAIN`; compatible approximate overlaps may become `POTENTIAL_RELATION`.
+- `manifest.json`: run id, database label, start/end time, success/failure counts and ProfileOptions snapshot. It never stores passwords.
+- `tables/*.json`: one completed table = one durable record.
+- JSON is written to `*.tmp` first and then replaced with an atomic move when supported.
+- A failed later table does not destroy earlier successful table results.
+- A single table record can be overwritten by a later rerun without rewriting every other table.
+- Excel/HTML read these persisted records; they do not rescan the database and do not recalculate profile metrics.
 
-These are discovery signals, not proof of a database constraint.
+V1 intentionally uses files instead of SQLite or another service database: deployment stays simple, results are portable, human-readable, and easy to archive. A database-backed repository can be added later if multi-user/history requirements justify it.
 
-## Build and regression
+## Minimal Profile defaults
+
+Default profiling keeps only high-value information:
+
+- row count
+- physical NULL count/rate
+- blank count
+- semantic-null count (`NULL`, `N/A`, `NA` by default)
+- exact distinct count
+- uniqueness ratio
+- low-cardinality values/frequencies
+- `distinct <= 20`: emit all distinct values with counts/ratios
+- numeric/date min and max
+- string/LOB length statistics
+- declared primary-key label
+- candidate unique-key flag
+- constant / quasi-constant / potential-enum flags
+
+More exploratory capabilities are optional and OFF by default:
+
+- format Pattern profile, e.g. `D11`, `L2D9`, `D4-D2-D2`
+- string-shape statistics
+- case-variant discovery
+- set fingerprint / MinHash relationship discovery
+- CLOB text preview
+
+Use `ProfileOptions` to enable only what is needed.
+
+## CLOB / BLOB
+
+LOB values are handled separately so a full scan does not accidentally materialize large content.
+
+| Type | V1 behavior |
+|---|---|
+| CLOB / NCLOB | read `Clob.length()`; content skipped by default; optional bounded preview |
+| BLOB | read `Blob.length()`; bytes are not loaded |
+| normal VARCHAR/CHAR | normal profile |
+
+LOB content does not participate in distinct/uniqueness.
+
+For DM, keep `clobAsString=false` when possible so CLOB stays identifiable as CLOB. The DM JDBC driver jar remains an external runtime dependency and is not committed to the repository.
+
+## Reports
+
+### Excel
+
+`quality-profile.xlsx` currently contains:
+
+1. `扫描概览` — run metadata and aggregate counts.
+2. `字段质量明细` — the main delivery sheet, one row per field.
+3. `探查提示` — profile insights such as potential enum, candidate unique key, constant/quasi-constant fields.
+
+The field detail sheet includes database/schema/table/column, DB/JDBC type, PK label, row count, NULL/blank/semantic-null, distinct, uniqueness, min/max, length statistics, enum/TopN values and profile insight flags.
+
+### HTML
+
+`quality-profile.html` is a self-contained static file. It provides:
+
+- overall scan summary
+- searchable table directory
+- table overview
+- one section per table
+- field-level profile metrics and discovery tags
+
+No server, Spring, Node.js, Nginx or browser plugin is required; open the file directly.
+
+V1 reports do **not** show Rule PASS/FAIL or quality scores. Profile describes facts; it does not invent business correctness.
+
+## Main models
+
+```text
+ColumnMetadata      = field definition / JDBC metadata
+ColumnProfile       = actual profile of one field
+TableMetadata       = table + column definitions
+TableProfile        = in-memory result of one table scan
+TableProfileRecord  = stable persisted/report representation
+RunManifest         = durable run-level progress and metadata
+```
+
+## Build
 
 Requirements: JDK 8+ and Maven 3.x.
 
@@ -176,40 +157,48 @@ mvn clean test
 mvn clean package
 ```
 
-GitHub Actions runs the same Java 8 Maven regression suite.
+Runtime dependencies are intentionally limited to:
 
-When Maven is unavailable, a JDK-only regression runner is included:
+- Gson 2.10.1 for stable JSON persistence
+- Apache POI 5.2.2 for `.xlsx` output
 
-```bash
-bash scripts/manual-regression.sh
-```
+The profile core remains standard JDBC/Java code. `scripts/manual-regression.sh` still runs the dependency-free core smoke regression when Maven is unavailable.
 
-Production code has zero external runtime dependencies. JUnit 4 is test scope only.
+## DM report-mode example
 
-## DM runtime example
-
-Put the DM JDBC jar outside the repository and include both jars on the classpath. Windows uses `;` as the classpath separator.
+Put the DM JDBC jar outside the repository and include it on the runtime classpath. Windows uses `;` as the separator.
 
 ```text
-java -cp "target/quality-analysis-0.1.0-SNAPSHOT.jar;D:\\path\\DmJdbcDriver18.jar" ^
+java -cp "target/quality-analysis-0.1.0-SNAPSHOT.jar;D:\path\DmJdbcDriver18.jar;target\dependency\*" ^
   com.initialneko.qualityanalysis.cli.QualityAnalysisCli ^
   dm.jdbc.driver.DmDriver ^
   jdbc:dm://127.0.0.1:5236/DAMENG ^
-  USER PASSWORD SCHEMA TABLE 10000
+  USER PASSWORD DM_TEST SCHEMA TABLE1,TABLE2 D:\quality-runs 10000
 ```
 
-The CLI currently prints the automatic profile. Configured-rule execution is exposed through the Java API first; a rule-config file/CLI can be added later when its format is stable.
+Arguments in report mode:
+
+```text
+<driver-class> <jdbc-url> <user> <password> <database-label> <schema>
+<table1,table2,...> <output-root> [fetchSize]
+```
+
+Legacy single-table console mode remains available:
+
+```text
+<driver-class> <jdbc-url> <user> <password> <schema> <table> [fetchSize]
+```
 
 ## Mock regression baseline
 
-The permanent mock suite covers candidate keys, enums, whitespace/case pollution, physical/blank/semantic nulls, numeric outliers, phone regex anomalies, date outliers, constants, shared dictionaries, CLOB/BLOB behavior and all five built-in configured rules.
+`MockDatasets` is the permanent development test dataset. New profiling/report features should first add deterministic mock data + assertions. Current report regression verifies JSON persistence/read-back, workbook sheets/key cells, and static HTML content.
 
-The policy is simple: every feature or bug fix adds deterministic mock data + assertions before real-DM verification.
+## Branches
 
-## Extension and design docs
+```text
+main                         preserved merged capability baseline
+archive/profile-with-rules   complete Profile + Rule implementation (retained)
+feature/profile-only-v1      active V1: Profile + persistence + reports
+```
 
-- `docs/DESIGN.md` — architecture and boundaries
-- `docs/RULES.md` — built-in rules and how to add a custom rule
-- `docs/MOCK_TESTSET.md` — permanent mock/regression contract
-
-Deferred until real measurements justify them: HLL/approximate distinct, sampling, parallel full-table scanning, database-side rule pushdown, persistent profile cache and complex domain-specific validators.
+See `docs/DESIGN.md`, `docs/MOCK_TESTSET.md`, and `docs/REPORTS.md`.
