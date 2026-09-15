@@ -26,11 +26,14 @@ import java.util.Locale;
 
 /** Writes a compact Excel delivery report from persisted records. */
 public final class ExcelProfileReportWriter {
+    /**
+     * V1 intentionally keeps the main field sheet compact. Internal/JDBC-only fields stay in JSON,
+     * while the Excel delivery keeps the indicators people actually inspect.
+     */
     private static final String[] DETAIL_HEADERS = {
-            "数据库", "Schema", "表名", "字段名", "字段标签", "DB类型", "JDBC类型", "类型族",
-            "可空", "声明主键", "总行数", "NULL数", "NULL率", "空串数", "语义空值数", "非空数",
-            "Distinct数", "唯一率", "最小值", "最大值", "最小长度", "最大长度", "平均长度",
-            "潜在枚举", "枚举/TopN", "候选唯一键", "常量字段", "准常量", "LOB内容跳过"
+            "数据库", "Schema", "表名", "字段名", "DB类型", "主键", "总行数",
+            "NULL数", "NULL率", "空串/语义空", "Distinct数", "唯一率",
+            "最小值", "最大值", "长度(最小/最大/平均)", "枚举/TopN", "探查提示"
     };
 
     public void write(RunManifest manifest, List<TableProfileRecord> records, Path output) throws IOException {
@@ -117,36 +120,24 @@ public final class ExcelProfileReportWriter {
                 set(row, c++, record.schema);
                 set(row, c++, record.table);
                 set(row, c++, column.name);
-                set(row, c++, column.label);
                 set(row, c++, column.databaseTypeName);
-                set(row, c++, column.jdbcType);
-                set(row, c++, column.family);
-                set(row, c++, yesNo(column.nullable));
-                set(row, c++, yesNo(column.declaredPrimaryKey));
+                set(row, c++, column.declaredPrimaryKey ? "是" : "");
                 set(row, c++, column.rowCount);
                 set(row, c++, column.nullCount);
                 setPercent(row, c++, column.nullRate, styles.percent);
-                set(row, c++, column.blankCount);
-                set(row, c++, column.semanticNullCount);
-                set(row, c++, column.nonNullCount);
+                set(row, c++, column.blankCount + " / " + column.semanticNullCount);
                 set(row, c++, column.distinctCount);
                 setPercent(row, c++, column.uniqueness, styles.percent);
                 set(row, c++, column.minValue);
                 set(row, c++, column.maxValue);
-                setNullableNumber(row, c++, column.minLength);
-                setNullableNumber(row, c++, column.maxLength);
-                setNullableNumber(row, c++, column.avgLength);
-                set(row, c++, yesNo(column.potentialEnum));
-                set(row, c++, valueSummary(column.values));
-                set(row, c++, yesNo(column.candidatePrimaryKey));
-                set(row, c++, yesNo(column.constant));
-                set(row, c++, yesNo(column.quasiConstant));
-                set(row, c, yesNo(column.lobContentSkipped));
+                set(row, c++, lengthSummary(column));
+                setWrap(row, c++, valueSummary(column.values), styles.wrap);
+                setWrap(row, c, insightSummary(column), styles.wrap);
             }
         }
         sheet.createFreezePane(0, 1);
         if (rowIndex > 1) sheet.setAutoFilter(new CellRangeAddress(0, rowIndex - 1, 0, DETAIL_HEADERS.length - 1));
-        int[] widths = {16,16,22,22,22,16,12,12,10,12,14,12,12,12,14,14,14,12,18,18,12,12,12,12,42,14,12,12,14};
+        int[] widths = {16,16,22,22,16,10,14,12,12,16,14,12,18,18,24,42,28};
         for (int i = 0; i < widths.length; i++) sheet.setColumnWidth(i, widths[i] * 256);
     }
 
@@ -207,19 +198,16 @@ public final class ExcelProfileReportWriter {
         row.createCell(column).setCellValue((double) value);
     }
 
-    private static void set(Row row, int column, int value) {
-        row.createCell(column).setCellValue((double) value);
-    }
-
     private static void setPercent(Row row, int column, double value, CellStyle style) {
         Cell cell = row.createCell(column);
         cell.setCellValue(value);
         cell.setCellStyle(style);
     }
 
-    private static void setNullableNumber(Row row, int column, Number value) {
-        if (value == null) set(row, column, "");
-        else row.createCell(column).setCellValue(value.doubleValue());
+    private static void setWrap(Row row, int column, String value, CellStyle style) {
+        Cell cell = row.createCell(column);
+        cell.setCellValue(value == null ? "" : value);
+        cell.setCellStyle(style);
     }
 
     private static String valueSummary(List<ValueRecord> values) {
@@ -237,7 +225,29 @@ public final class ExcelProfileReportWriter {
         return out.toString();
     }
 
-    private static String yesNo(boolean value) { return value ? "是" : "否"; }
+    private static String lengthSummary(ColumnRecord column) {
+        if (column.minLength == null && column.maxLength == null && column.avgLength == null) return "";
+        return number(column.minLength) + " / " + number(column.maxLength) + " / "
+                + (column.avgLength == null ? "" : String.format(Locale.ROOT, "%.2f", column.avgLength));
+    }
+
+    private static String insightSummary(ColumnRecord column) {
+        StringBuilder out = new StringBuilder();
+        appendInsight(out, column.potentialEnum, "潜在枚举");
+        appendInsight(out, column.candidatePrimaryKey, "候选唯一键");
+        appendInsight(out, column.constant, "常量字段");
+        appendInsight(out, !column.constant && column.quasiConstant, "准常量");
+        appendInsight(out, column.lobContentSkipped, "LOB仅统计长度");
+        return out.toString();
+    }
+
+    private static void appendInsight(StringBuilder out, boolean enabled, String text) {
+        if (!enabled) return;
+        if (out.length() > 0) out.append("；");
+        out.append(text);
+    }
+
+    private static String number(Number value) { return value == null ? "" : String.valueOf(value); }
     private static String safe(String value) { return value == null ? "" : value; }
 
     private static String percentText(double value) {
@@ -254,6 +264,7 @@ public final class ExcelProfileReportWriter {
         private final CellStyle header;
         private final CellStyle label;
         private final CellStyle percent;
+        private final CellStyle wrap;
 
         private Styles(Workbook workbook) {
             Font titleFont = workbook.createFont();
@@ -277,6 +288,9 @@ public final class ExcelProfileReportWriter {
 
             percent = workbook.createCellStyle();
             percent.setDataFormat(workbook.createDataFormat().getFormat("0.00%"));
+
+            wrap = workbook.createCellStyle();
+            wrap.setWrapText(true);
         }
     }
 }
