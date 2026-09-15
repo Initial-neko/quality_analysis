@@ -2,6 +2,7 @@ package com.initialneko.qualityanalysis.cli;
 
 import com.initialneko.qualityanalysis.QualityAnalyzer;
 import com.initialneko.qualityanalysis.config.ProfileOptions;
+import com.initialneko.qualityanalysis.input.TableListFileReader;
 import com.initialneko.qualityanalysis.model.TableProfile;
 import com.initialneko.qualityanalysis.model.TableRef;
 import com.initialneko.qualityanalysis.run.ProfileRunService;
@@ -43,14 +44,30 @@ public final class QualityAnalysisCli {
     private static void runReportMode(Connection connection, String[] args) throws Exception {
         String databaseLabel = args[4];
         String schema = args[5];
-        String[] tableNames = args[6].split(",");
-        Path outputRoot = Paths.get(args[7]);
-        int fetchSize = args.length >= 9 ? Integer.parseInt(args[8]) : 10_000;
-        List<TableRef> tables = new ArrayList<TableRef>();
-        for (String name : tableNames) {
-            String table = name.trim();
-            if (table.length() > 0) tables.add(new TableRef(schema, table));
+        List<TableRef> tables;
+        Path outputRoot;
+        int fetchSize;
+
+        if ("--table-file".equals(args[6])) {
+            if (args.length < 9) {
+                printUsage();
+                throw new IllegalArgumentException("--table-file requires <file> and <output-root>");
+            }
+            Path tableFile = Paths.get(args[7]);
+            tables = TableListFileReader.read(tableFile, schema);
+            outputRoot = Paths.get(args[8]);
+            fetchSize = args.length >= 10 ? Integer.parseInt(args[9]) : 10_000;
+        } else {
+            String[] tableNames = args[6].split(",");
+            outputRoot = Paths.get(args[7]);
+            fetchSize = args.length >= 9 ? Integer.parseInt(args[8]) : 10_000;
+            tables = new ArrayList<TableRef>();
+            for (String name : tableNames) {
+                String table = name.trim();
+                if (table.length() > 0) tables.add(new TableRef(schema, table));
+            }
         }
+
         ProfileOptions options = ProfileOptions.builder().fetchSize(fetchSize).build();
         Path runDirectory = new ProfileRunService().run(connection, databaseLabel, tables, options, outputRoot);
         System.out.println("Profile run saved to: " + runDirectory.toAbsolutePath());
@@ -68,8 +85,10 @@ public final class QualityAnalysisCli {
     }
 
     private static void printUsage() {
-        System.err.println("Report mode:");
+        System.err.println("Report mode (comma-separated tables):");
         System.err.println("  <driver-class> <jdbc-url> <user> <password> <database-label> <schema> <table1,table2,...> <output-root> [fetchSize]");
+        System.err.println("Report mode (table file, UTF-8):");
+        System.err.println("  <driver-class> <jdbc-url> <user> <password> <database-label> <default-schema|-> --table-file <file> <output-root> [fetchSize]");
         System.err.println("Legacy single-table console mode:");
         System.err.println("  <driver-class> <jdbc-url> <user> <password> <schema> <table> [fetchSize]");
     }

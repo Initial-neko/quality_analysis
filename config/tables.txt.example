@@ -1,0 +1,13 @@
+# UTF-8，每行一张表。
+# 空行和以 # 开头的整行注释会被忽略。
+#
+# 如果命令行已经提供默认 Schema，例如 TEST，则可以只写表名：
+CUSTOMER
+ORDERS
+
+# 也可以显式指定 Schema，显式值优先于默认 Schema：
+# TEST.CUSTOMER
+# SALES.ORDERS
+# OTHER.AUDIT_LOG
+
+# 不会自动发现或扫描文件以外的任何表。

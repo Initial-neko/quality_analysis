@@ -28,6 +28,7 @@ jobs:
           test -d "$DIST/src/test"
           test -d "$DIST/docs"
           test -d "$DIST/scripts"
+          test -f "$DIST/config/tables.txt.example"
           test -f "$DIST/pom.xml"
           test -f "$DIST/README.md"
           test -f "target/quality-analysis-0.1.0-SNAPSHOT-distribution.zip"
