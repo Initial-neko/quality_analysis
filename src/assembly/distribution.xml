@@ -41,6 +41,11 @@
       <useDefaultExcludes>true</useDefaultExcludes>
       <fileMode>0755</fileMode>
     </fileSet>
+    <fileSet>
+      <directory>${project.basedir}/config</directory>
+      <outputDirectory>/config</outputDirectory>
+      <useDefaultExcludes>true</useDefaultExcludes>
+    </fileSet>
   </fileSets>
 
   <dependencySets>
