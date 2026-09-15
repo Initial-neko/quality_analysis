@@ -1,34 +1,49 @@
-# Profile persistence and reports
+# Profile 持久化与报告说明
 
-## Purpose
+## 一、目标
 
-V1 scans tables sequentially. A completed table must become durable immediately; later tables must not be able to erase earlier results. Reports are generated from persisted records only.
+V1 按表顺序扫描。一张表完成后必须立即变成可恢复的持久化结果，后面的表失败不能破坏前面已经完成的结果。
 
-This keeps three concerns separate:
+整体职责分层：
 
 ```text
-JDBC scan -> Profile -> persistence -> report rendering
+JDBC 扫描 -> Profile -> 持久化 -> 报告渲染
 ```
 
-Report rendering never queries the source database.
+报告渲染阶段不会重新访问源数据库。
 
-## Why one JSON file per table
+## 二、为什么一张表一个 JSON
 
-V1 stores one `TableProfileRecord` per table instead of using JSONL, Java serialization or SQLite.
+V1 每张表保存一个 `TableProfileRecord`，而不是使用 JSONL、Java Serialization 或 SQLite。
 
-### Compared with JSONL
+### 相比 JSONL
 
-JSONL is convenient for append-only events, but replacing one table after a rerun requires rewriting or de-duplicating the whole file. One file per table maps directly to the execution unit and makes overwrite/recovery simple.
+JSONL 适合追加式事件日志，但我们的重跑单位是“表”。如果一张表重新扫描，JSONL 需要追加新版本再做去重，或者重写整个文件。
 
-### Compared with Java serialization
+一表一 JSON 和实际执行单元完全一致，更适合：
 
-Java serialization is opaque and tightly coupled to class versions. JSON records are readable, diffable and can later be consumed by other tools.
+- 单表覆盖
+- 单表重跑
+- 断点恢复
+- 独立检查
+- 文件级归档
 
-### Compared with SQLite
+### 相比 Java Serialization
 
-SQLite would be reasonable when the product needs historical queries, multiple users, cross-run comparison or concurrent writers. V1 only needs durable local output and portable delivery, so a database adds deployment and schema-migration cost without enough benefit.
+Java Serialization 不透明，并且和类版本绑定较紧。JSON 更容易：
 
-## Run directory
+- 人工查看
+- diff
+- 排查问题
+- 被其他语言/工具继续消费
+
+### 相比 SQLite
+
+当系统未来需要历史查询、多用户、跨任务对比、并发写入时，SQLite 或服务数据库会更合适。
+
+当前 V1 只需要本地可靠保存和交付文件，因此数据库会额外引入部署、schema 和迁移成本，没有必要。
+
+## 三、任务目录
 
 ```text
 <output-root>/<runId>/
@@ -41,143 +56,178 @@ SQLite would be reasonable when the product needs historical queries, multiple u
 └── quality-profile.html
 ```
 
-`runId` uses a timestamp with milliseconds. Credentials are never written to the run directory.
+`runId` 使用时间戳生成。数据库密码等敏感凭据不会写入任务目录。
 
-## manifest.json
+## 四、manifest.json
 
-`RunManifest` records:
+`RunManifest` 保存：
 
-- run id
-- non-sensitive database label
-- start/end time
-- RUNNING / COMPLETED / COMPLETED_WITH_ERRORS
-- planned/success/failed table counts
-- key `ProfileOptions`
-- one execution entry per attempted table
+- runId
+- 非敏感 databaseLabel
+- 开始时间 / 结束时间
+- `RUNNING / COMPLETED / COMPLETED_WITH_ERRORS`
+- 计划表数
+- 成功表数
+- 失败表数
+- 关键 `ProfileOptions`
+- 每张尝试扫描表的执行记录
 
-The manifest is rewritten after every table using temp + atomic move when supported. If the process stops after table 17, the manifest and the first 17 table records remain usable.
+每完成一张表都会重新写一次 manifest，采用临时文件 + 尽可能原子替换的方式。
 
-## TableProfileRecord
+因此如果程序在第 18 张表中断，前 17 张表的 JSON 和 manifest 进度仍然可用。
 
-The persisted record is intentionally separate from `TableProfile`.
+## 五、TableProfileRecord
 
-`TableProfile` is the profiling engine model. `TableProfileRecord` is a stable persistence/report DTO. This prevents report/file concerns from leaking into the profiling core.
+持久化记录故意和 `TableProfile` 分开。
 
-A record contains:
+- `TableProfile`：Profile 引擎内部模型
+- `TableProfileRecord`：稳定的文件/报告 DTO
+
+这样 Excel/HTML、JSON 格式等关注点不会污染核心 Profile 引擎。
+
+一张表的记录包括：
 
 - database / schema / table
-- scan timestamp / duration / row count
-- column JDBC/database metadata
-- NULL / blank / semantic-null metrics
-- distinct / uniqueness
-- min / max
-- string/LOB lengths
-- low-cardinality values + exact frequencies retained by the profiler
-- potential-enum / candidate-key / constant / quasi-constant flags
-- optional pattern/string-shape output when those profile switches were enabled
+- 扫描时间 / 耗时 / 行数
+- 字段 JDBC / 数据库元数据
+- NULL / 空串 / 语义空值
+- Distinct / 唯一率
+- Min / Max
+- 字符串 / LOB 长度
+- Profile 已保留的低基数值和精确频次
+- 潜在枚举
+- 候选唯一键
+- 常量 / 准常量
+- 可选 Pattern / 字符组成结果（仅在相关开关开启时）
 
-A table record is written to `*.tmp` first and then replaces the target JSON. This avoids leaving a half-written normal record after interruption.
+正式 JSON 写入前先写 `*.tmp`，成功后再替换正式文件，避免中断产生半写文件。
 
-## Excel report
+## 六、Excel 报告
 
-`quality-profile.xlsx` has three sheets.
+文件：
 
-### 扫描概览
+```text
+quality-profile.xlsx
+```
 
-Run metadata and aggregate counts:
+当前三个 Sheet：
 
-- planned/success/failed tables
-- saved table records
-- total fields
-- cumulative rows scanned
-- potential enum fields
-- candidate unique keys
-- constant fields
+### 1. 扫描概览
+
+展示：
+
+- 计划 / 成功 / 失败表数
+- 已保存表记录数
+- 字段总数
+- 累计扫描行数
+- 潜在枚举字段数
+- 候选唯一键数
+- 常量字段数
 - fetchSize
+- 任务基本信息
 
-### 字段质量明细
+### 2. 字段质量明细
 
-Main delivery sheet. One field per row.
+这是主要交付 Sheet，一行一个字段。
 
-Columns include:
+字段包括：
 
 - database / schema / table / field / label
-- database type / JDBC type / normalized family
-- nullable / declared PK
-- row count
-- NULL / NULL rate / blank / semantic null / non-null
-- distinct / uniqueness
-- min / max
-- min / max / average length
-- potential enum + retained enum/TopN values
-- candidate unique key
-- constant / quasi-constant
-- LOB-content-skipped flag
+- 数据库类型 / JDBC 类型 / ValueFamily
+- 是否 nullable
+- 是否数据库声明主键
+- rowCount
+- NULL / NULL率 / 空串 / 语义空值 / non-null
+- Distinct / 唯一率
+- Min / Max
+- 最小 / 最大 / 平均长度
+- 潜在枚举
+- 枚举 / TopN 值
+- 候选唯一键
+- 常量 / 准常量
+- 是否跳过 LOB 正文
 
-This sheet is intended for filtering, sorting and governance follow-up.
+该 Sheet 主要用于治理人员筛选、排序和后续分析。
 
-### 探查提示
+### 3. 探查提示
 
-Only profile-derived discovery signals are listed:
+只展示 Profile 自动发现的提示：
 
-- potential enum
-- candidate unique key
-- constant field
-- quasi-constant field
+- 潜在枚举
+- 候选唯一键
+- 常量字段
+- 准常量字段
 
-These are observations, not validation failures.
+这些都属于“发现”，不是质量校验失败。
 
-## HTML report
+## 七、HTML 报告
 
-`quality-profile.html` is self-contained and contains inline CSS/JavaScript. It can be opened directly from disk.
+文件：
 
-It provides:
+```text
+quality-profile.html
+```
 
-- overall summary cards
-- run metadata
-- searchable table directory
-- table overview
-- per-table field profile table
-- discovery tags and enum/TopN values
+HTML 是一个自包含的静态文件，CSS/JavaScript 都内嵌，可以直接双击打开。
 
-No server-side runtime is required.
+目前提供：
 
-## Important semantic boundary
+- 整体扫描摘要卡片
+- 任务元数据
+- 可搜索表目录
+- 表级概览
+- 每张表的字段 Profile 明细
+- 枚举 / TopN
+- Profile Insight 标签
 
-V1 does not contain field-specific Rules.
+不需要任何服务端运行环境。
 
-For example:
+## 八、最重要的语义边界
+
+V1 没有字段级 Rule。
+
+例如：
 
 ```text
 AGE min=-1 max=150
 ```
 
-is reported as an observed range. V1 does not call `-1` invalid because no business range rule has been configured.
+V1 只报告观察到的范围 `-1 ~ 150`，不会说 `-1` 是异常，因为没有业务规则说明 AGE 必须大于等于 0。
 
-Likewise:
+同样：
 
 ```text
 distinct=5
 ```
 
-may produce a `potential enum` insight, but it is not a PASS/FAIL result.
+可能产生“潜在枚举”提示，但这不是 PASS/FAIL。
 
-The preserved future rule implementation remains in:
+未来如果重新启用规则能力，可参考：
 
 ```text
 archive/profile-with-rules
 ```
 
-## Re-running one table
+## 九、单表重跑
 
-A single-table rerun can write the same `<schema>.<table>.json` file again. Report generation then reads the latest saved record. V1 does not yet implement a UI for resume/retry selection; the storage design deliberately makes that future feature straightforward.
+单表重跑后，可以重新写同一个：
 
-## Tests
+```text
+<schema>.<table>.json
+```
 
-`ProfilePersistenceAndReportTest` verifies:
+之后重新生成报告时会读取最新记录。
 
-1. one table can be persisted and loaded back;
-2. manifest progress survives independently;
-3. reports are generated from saved records;
-4. the XLSX contains the expected sheets and key fields;
-5. the HTML contains the expected table/field/profile content.
+当前 V1 尚未提供“选择失败表一键重跑”的 UI/命令，但存储结构已经支持未来增加这个能力。
+
+## 十、测试
+
+`ProfilePersistenceAndReportTest` 验证：
+
+1. 单表可以保存并重新读取；
+2. manifest 进度独立保存；
+3. 报告只从保存后的记录生成；
+4. XLSX 包含正确 Sheet 和关键字段；
+5. HTML 包含关键表、字段和 Profile 信息。
+
+测试特意先把结果落盘，再重新读取 JSON 后生成报告，从架构上保证报告层不会偷偷重新扫描数据库。
