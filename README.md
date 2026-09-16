@@ -84,7 +84,8 @@ TableProfile
 runs/<runId>/tables/<schema>.<table>.json
       |
       +--> quality-profile.xlsx
-      `--> quality-profile.html
+      +--> quality-profile.html
+      `--> quality-profile-tables/<schema>.<table>.html
 ```
 
 V1 不做应用层分页，不使用 OFFSET/LIMIT，也不要求按照主键排序。JDBC/达梦驱动负责结果集预取，程序使用 `ResultSet.next()` 顺序消费数据。
@@ -105,6 +106,8 @@ V1 不做应用层分页，不使用 OFFSET/LIMIT，也不要求按照主键排�
 - 字符串/LOB 长度统计；
 - 数据库声明主键标签；
 - 候选唯一键、常量字段、准常量字段、潜在枚举字段提示。
+
+物理 `NULL`、空串、语义空值都会保留各自计数，但不会继续进入 Distinct、唯一率、TopN、Min/Max、字符串长度、Pattern 等后续画像。
 
 Pattern、字符组成、大小写变体、Set Fingerprint / MinHash、CLOB Preview 等能力默认关闭。
 
@@ -131,7 +134,10 @@ runs/20260915_001/
 │   ├── TEST.CUSTOMER.json
 │   └── TEST.ORDERS.json
 ├── quality-profile.xlsx
-└── quality-profile.html
+├── quality-profile.html
+└── quality-profile-tables/
+    ├── TEST.CUSTOMER.html
+    └── TEST.ORDERS.html
 ```
 
 - 一张表完成后立即保存一个 JSON；
@@ -140,7 +146,9 @@ runs/20260915_001/
 - Excel/HTML 只读取持久化 JSON，不重新扫描数据库；
 - 不使用 SQLite，当前按表落盘更适合本地、可携带的 V1。
 
-Excel 包含 `扫描概览`、`字段质量明细`、`探查提示` 三个 Sheet。HTML 是可以直接双击打开的静态文件，不需要 Spring/Tomcat/Nginx/Node。
+Excel 包含 `扫描概览`、`字段质量明细`、`探查提示` 三个 Sheet。
+
+HTML 仍然是纯静态页面，但不再把所有字段明细塞进一个文件：`quality-profile.html` 只负责表级预览和链接，每张表的字段详情位于 `quality-profile-tables/` 下。直接双击首页即可使用，不需要 Spring/Tomcat/Nginx/Node。
 
 ## 七、一条命令打包
 
@@ -230,8 +238,12 @@ bash scripts/mock-report.sh
 会生成：
 
 ```text
-target/mock-profile-report/quality-profile.xlsx
-target/mock-profile-report/quality-profile.html
+target/mock-profile-report/
+├── manifest.json
+├── tables/
+├── quality-profile.xlsx
+├── quality-profile.html
+└── quality-profile-tables/
 ```
 
 完整本地验收说明：
