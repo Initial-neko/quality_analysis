@@ -30,12 +30,7 @@ JSONL 适合追加式事件日志，但我们的重跑单位是“表”。如�
 
 ### 相比 Java Serialization
 
-Java Serialization 不透明，并且和类版本绑定较紧。JSON 更容易：
-
-- 人工查看
-- diff
-- 排查问题
-- 被其他语言/工具继续消费
+Java Serialization 不透明，并且和类版本绑定较紧。JSON 更容易人工查看、diff、排查问题，也方便其他语言继续消费。
 
 ### 相比 SQLite
 
@@ -53,7 +48,11 @@ Java Serialization 不透明，并且和类版本绑定较紧。JSON 更容易�
 │   ├── TEST.ORDERS.json
 │   └── ...
 ├── quality-profile.xlsx
-└── quality-profile.html
+├── quality-profile.html
+└── quality-profile-tables/
+    ├── TEST.CUSTOMER.html
+    ├── TEST.ORDERS.html
+    └── ...
 ```
 
 `runId` 使用时间戳生成。数据库密码等敏感凭据不会写入任务目录。
@@ -102,6 +101,28 @@ Java Serialization 不透明，并且和类版本绑定较紧。JSON 更容易�
 
 正式 JSON 写入前先写 `*.tmp`，成功后再替换正式文件，避免中断产生半写文件。
 
+### 缺失值进入 Profile 的边界
+
+当前把以下三类值都视为“缺失类值”：
+
+1. 数据库物理 `NULL`
+2. trim 后为空的空串
+3. 语义空值，默认 `NULL`、`N/A`、`NA`
+
+它们仍分别保留 `nullCount`、`blankCount`、`semanticNullCount` 计数，但识别后不会继续进入：
+
+- Distinct
+- 唯一率分母
+- 枚举 / TopN 频次
+- Min / Max
+- 字符串长度
+- Pattern
+- String Shape
+- Case Variant
+- Relationship Fingerprint
+
+`nonNullCount` 仍保留 JDBC 层“物理非 NULL”的原始含义，因此空串和语义空值仍属于物理非 NULL，但不会污染后续画像指标。
+
 ## 六、Excel 报告
 
 文件：
@@ -114,40 +135,33 @@ quality-profile.xlsx
 
 ### 1. 扫描概览
 
-展示：
-
-- 计划 / 成功 / 失败表数
-- 已保存表记录数
-- 字段总数
-- 累计扫描行数
-- 潜在枚举字段数
-- 候选唯一键数
-- 常量字段数
-- fetchSize
-- 任务基本信息
+展示任务基本信息，以及计划/成功/失败表数、字段总数、累计扫描行数、潜在枚举、候选唯一键、常量字段、fetchSize 等。
 
 ### 2. 字段质量明细
 
-这是主要交付 Sheet，一行一个字段。
+当前主明细固定为 17 列：
 
-字段包括：
+```text
+数据库
+Schema
+表名
+字段名
+DB类型
+主键
+总行数
+NULL数
+NULL率
+空串/语义空
+Distinct数
+唯一率
+最小值
+最大值
+长度(最小/最大/平均)
+枚举/TopN
+探查提示
+```
 
-- database / schema / table / field / label
-- 数据库类型 / JDBC 类型 / ValueFamily
-- 是否 nullable
-- 是否数据库声明主键
-- rowCount
-- NULL / NULL率 / 空串 / 语义空值 / non-null
-- Distinct / 唯一率
-- Min / Max
-- 最小 / 最大 / 平均长度
-- 潜在枚举
-- 枚举 / TopN 值
-- 候选唯一键
-- 常量 / 准常量
-- 是否跳过 LOB 正文
-
-该 Sheet 主要用于治理人员筛选、排序和后续分析。
+内部 JDBC 类型号、ValueFamily、nullable、nonNullCount、LOB 内部标记等继续保存在 JSON，不在主交付 Sheet 中铺开。
 
 ### 3. 探查提示
 
@@ -162,27 +176,79 @@ quality-profile.xlsx
 
 ## 七、HTML 报告
 
-文件：
+入口文件：
 
 ```text
 quality-profile.html
 ```
 
-HTML 是一个自包含的静态文件，CSS/JavaScript 都内嵌，可以直接双击打开。
-
-目前提供：
+入口页只展示：
 
 - 整体扫描摘要卡片
 - 任务元数据
-- 可搜索表目录
-- 表级概览
-- 每张表的字段 Profile 明细
-- 枚举 / TopN
-- Profile Insight 标签
+- 可搜索表概览
+- 每张表对应的详情链接
 
-不需要任何服务端运行环境。
+字段明细不再全部塞进入口页，而是拆成：
 
-## 八、最重要的语义边界
+```text
+quality-profile-tables/<schema>.<table>.html
+```
+
+每个表页面只渲染自己这一张表的字段 Profile，并提供返回总览链接。
+
+这样表数量、字段数量较大时，浏览器不会一次创建所有字段 DOM，入口 HTML 文件也不会随着全部字段明细线性膨胀。
+
+所有页面仍然是纯静态文件，不需要 Spring、Tomcat、Nginx、Node 或其他 Web Server。直接双击 `quality-profile.html` 即可使用，相对链接会打开对应表页面。
+
+## 八、探查提示的语义边界
+
+当前探查提示不是 Rule，也不是 PASS / FAIL。
+
+### 潜在枚举
+
+当前条件：
+
+```text
+LOB 正文未跳过
+AND distinctCount > 0
+AND distinctCount <= 20
+```
+
+它只表示值域比较小，适合人工进一步判断是不是代码/状态/类别字段。
+
+### 候选唯一键
+
+当前条件：
+
+```text
+有数据
+AND 无物理 NULL
+AND 无空串
+AND 无语义空值
+AND Distinct = 总行数
+AND 非 LOB
+```
+
+这只是“数据表现得像唯一键”，不表示数据库已经声明 PK。
+
+### 常量字段
+
+有效值的 Distinct = 1。
+
+例如所有有效记录都是 `CRM`，则会提示常量字段。
+
+### 准常量字段
+
+当前判断是最高频有效值占比 `>= 99%`。
+
+它用于提示“几乎所有记录都一样”的字段。
+
+### LOB 仅统计长度
+
+HTML/Excel 字段明细还会显示 `LOB仅统计长度` / `LOB仅画像长度`，用于说明 CLOB/BLOB 正文没有参与 Distinct、TopN 等画像。这是处理策略提示，不属于四类正式探查发现。
+
+## 九、最重要的业务边界
 
 V1 没有字段级 Rule。
 
@@ -208,7 +274,7 @@ distinct=5
 archive/profile-with-rules
 ```
 
-## 九、单表重跑
+## 十、单表重跑
 
 单表重跑后，可以重新写同一个：
 
@@ -216,11 +282,11 @@ archive/profile-with-rules
 <schema>.<table>.json
 ```
 
-之后重新生成报告时会读取最新记录。
+之后重新生成报告时会读取最新记录。HTML 重新生成时会先清理旧的表详情 HTML，避免留下已经不存在的旧页面。
 
 当前 V1 尚未提供“选择失败表一键重跑”的 UI/命令，但存储结构已经支持未来增加这个能力。
 
-## 十、测试
+## 十一、测试
 
 `ProfilePersistenceAndReportTest` 验证：
 
@@ -228,6 +294,7 @@ archive/profile-with-rules
 2. manifest 进度独立保存；
 3. 报告只从保存后的记录生成；
 4. XLSX 包含正确 Sheet 和关键字段；
-5. HTML 包含关键表、字段和 Profile 信息。
+5. HTML 首页只保存表级概览；
+6. 每张表生成独立详情 HTML，且相对链接可回到首页。
 
-测试特意先把结果落盘，再重新读取 JSON 后生成报告，从架构上保证报告层不会偷偷重新扫描数据库。
+`MockProfileRegressionTest` 额外验证空串和语义空值不会再进入 Distinct、唯一率、长度和 TopN 等后续画像。
