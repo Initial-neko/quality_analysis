@@ -27,13 +27,27 @@ import java.util.Locale;
 /** Writes a compact Excel delivery report from persisted records. */
 public final class ExcelProfileReportWriter {
     /**
-     * V1 intentionally keeps the main field sheet compact. Internal/JDBC-only fields stay in JSON,
-     * while the Excel delivery keeps the indicators people actually inspect.
+     * The field-detail delivery layout is configured only here.
+     * Remove, add or reorder an item in this array and header/value/width move together.
      */
-    private static final String[] DETAIL_HEADERS = {
-            "数据库", "Schema", "表名", "字段名", "DB类型", "主键", "总行数",
-            "NULL数", "NULL率", "空串/语义空", "Distinct数", "唯一率",
-            "最小值", "最大值", "长度(最小/最大/平均)", "枚举/TopN", "探查提示"
+    private static final ExcelDetailColumn[] DETAIL_COLUMNS = {
+            ExcelDetailColumn.DATABASE,
+            ExcelDetailColumn.SCHEMA,
+            ExcelDetailColumn.TABLE,
+            ExcelDetailColumn.COLUMN,
+            ExcelDetailColumn.DB_TYPE,
+            ExcelDetailColumn.PRIMARY_KEY,
+            ExcelDetailColumn.ROW_COUNT,
+            ExcelDetailColumn.NULL_COUNT,
+            ExcelDetailColumn.NULL_RATE,
+            ExcelDetailColumn.MISSING_STRINGS,
+            ExcelDetailColumn.DISTINCT_COUNT,
+            ExcelDetailColumn.UNIQUENESS,
+            ExcelDetailColumn.MIN_VALUE,
+            ExcelDetailColumn.MAX_VALUE,
+            ExcelDetailColumn.LENGTH_SUMMARY,
+            ExcelDetailColumn.VALUES,
+            ExcelDetailColumn.INSIGHTS
     };
 
     public void write(RunManifest manifest, List<TableProfileRecord> records, Path output) throws IOException {
@@ -110,35 +124,31 @@ public final class ExcelProfileReportWriter {
 
     private void writeFieldDetails(Workbook workbook, Styles styles, List<TableProfileRecord> records) {
         Sheet sheet = workbook.createSheet("字段质量明细");
-        writeHeader(sheet, styles, DETAIL_HEADERS);
+        writeDetailHeader(sheet, styles);
+        ExcelDetailColumn.Styles detailStyles = new ExcelDetailColumn.Styles(styles.percent, styles.wrap);
         int rowIndex = 1;
         for (TableProfileRecord record : records) {
             for (ColumnRecord column : record.columns) {
                 Row row = sheet.createRow(rowIndex++);
-                int c = 0;
-                set(row, c++, record.database);
-                set(row, c++, record.schema);
-                set(row, c++, record.table);
-                set(row, c++, column.name);
-                set(row, c++, column.databaseTypeName);
-                set(row, c++, column.declaredPrimaryKey ? "是" : "");
-                set(row, c++, column.rowCount);
-                set(row, c++, column.nullCount);
-                setPercent(row, c++, column.nullRate, styles.percent);
-                set(row, c++, column.blankCount + " / " + column.semanticNullCount);
-                set(row, c++, column.distinctCount);
-                setPercent(row, c++, column.uniqueness, styles.percent);
-                set(row, c++, column.minValue);
-                set(row, c++, column.maxValue);
-                set(row, c++, lengthSummary(column));
-                setWrap(row, c++, valueSummary(column.values), styles.wrap);
-                setWrap(row, c, insightSummary(column), styles.wrap);
+                for (int i = 0; i < DETAIL_COLUMNS.length; i++) {
+                    DETAIL_COLUMNS[i].write(row, i, record, column, detailStyles);
+                }
             }
         }
         sheet.createFreezePane(0, 1);
-        if (rowIndex > 1) sheet.setAutoFilter(new CellRangeAddress(0, rowIndex - 1, 0, DETAIL_HEADERS.length - 1));
-        int[] widths = {16,16,22,22,16,10,14,12,12,16,14,12,18,18,24,42,28};
-        for (int i = 0; i < widths.length; i++) sheet.setColumnWidth(i, widths[i] * 256);
+        if (rowIndex > 1) sheet.setAutoFilter(new CellRangeAddress(0, rowIndex - 1, 0, DETAIL_COLUMNS.length - 1));
+        for (int i = 0; i < DETAIL_COLUMNS.length; i++) {
+            sheet.setColumnWidth(i, DETAIL_COLUMNS[i].widthCharacters * 256);
+        }
+    }
+
+    private void writeDetailHeader(Sheet sheet, Styles styles) {
+        Row header = sheet.createRow(0);
+        for (int i = 0; i < DETAIL_COLUMNS.length; i++) {
+            Cell cell = header.createCell(i);
+            cell.setCellValue(DETAIL_COLUMNS[i].header);
+            cell.setCellStyle(styles.header);
+        }
     }
 
     private void writeInsights(Workbook workbook, Styles styles, List<TableProfileRecord> records) {
@@ -194,23 +204,7 @@ public final class ExcelProfileReportWriter {
         row.createCell(column).setCellValue(value == null ? "" : value);
     }
 
-    private static void set(Row row, int column, long value) {
-        row.createCell(column).setCellValue((double) value);
-    }
-
-    private static void setPercent(Row row, int column, double value, CellStyle style) {
-        Cell cell = row.createCell(column);
-        cell.setCellValue(value);
-        cell.setCellStyle(style);
-    }
-
-    private static void setWrap(Row row, int column, String value, CellStyle style) {
-        Cell cell = row.createCell(column);
-        cell.setCellValue(value == null ? "" : value);
-        cell.setCellStyle(style);
-    }
-
-    private static String valueSummary(List<ValueRecord> values) {
+    static String valueSummary(List<ValueRecord> values) {
         if (values == null || values.isEmpty()) return "";
         StringBuilder out = new StringBuilder();
         for (ValueRecord value : values) {
@@ -225,13 +219,7 @@ public final class ExcelProfileReportWriter {
         return out.toString();
     }
 
-    private static String lengthSummary(ColumnRecord column) {
-        if (column.minLength == null && column.maxLength == null && column.avgLength == null) return "";
-        return number(column.minLength) + " / " + number(column.maxLength) + " / "
-                + (column.avgLength == null ? "" : String.format(Locale.ROOT, "%.2f", column.avgLength));
-    }
-
-    private static String insightSummary(ColumnRecord column) {
+    static String insightSummary(ColumnRecord column) {
         StringBuilder out = new StringBuilder();
         appendInsight(out, column.potentialEnum, "潜在枚举");
         appendInsight(out, column.candidatePrimaryKey, "候选唯一键");
@@ -247,7 +235,6 @@ public final class ExcelProfileReportWriter {
         out.append(text);
     }
 
-    private static String number(Number value) { return value == null ? "" : String.valueOf(value); }
     private static String safe(String value) { return value == null ? "" : value; }
 
     private static String percentText(double value) {
