@@ -6,7 +6,6 @@ import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.Row;
 
-import java.sql.Types;
 import java.util.Locale;
 
 /**
@@ -36,7 +35,7 @@ enum ExcelDetailColumn {
     },
     DB_TYPE("DB类型", 20) {
         @Override void write(Row row, int index, TableProfileRecord table, ColumnRecord column, Styles styles) {
-            text(row, index, databaseType(column));
+            text(row, index, DatabaseTypeFormatter.format(column));
         }
     },
     PRIMARY_KEY("主键", 10) {
@@ -109,30 +108,6 @@ enum ExcelDetailColumn {
     }
 
     abstract void write(Row row, int index, TableProfileRecord table, ColumnRecord column, Styles styles);
-
-    static String databaseType(ColumnRecord column) {
-        String base = column.databaseTypeName == null ? "" : column.databaseTypeName;
-        if (base.length() == 0) return "";
-        int precision = column.precision;
-        int scale = column.scale;
-        switch (column.jdbcType) {
-            case Types.CHAR:
-            case Types.VARCHAR:
-            case Types.LONGVARCHAR:
-            case Types.NCHAR:
-            case Types.NVARCHAR:
-            case Types.LONGNVARCHAR:
-            case Types.BINARY:
-            case Types.VARBINARY:
-            case Types.LONGVARBINARY:
-                return precision > 0 ? base + "(" + precision + ")" : base;
-            case Types.DECIMAL:
-            case Types.NUMERIC:
-                return precision > 0 ? base + "(" + precision + "," + Math.max(scale, 0) + ")" : base;
-            default:
-                return base;
-        }
-    }
 
     private static String lengthSummary(ColumnRecord column) {
         if (column.minLength == null && column.maxLength == null && column.avgLength == null) return "";
