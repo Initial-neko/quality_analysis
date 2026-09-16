@@ -34,6 +34,7 @@ final class ColumnAccumulator {
     private long blankCount;
     private long semanticNullCount;
     private long nonNullCount;
+    private long profiledValueCount;
     private long trimChangedCount;
     private Long minLength;
     private Long maxLength;
@@ -81,9 +82,13 @@ final class ColumnAccumulator {
             acceptLob((LobValue) value);
             return;
         }
-        if (value instanceof String || metadata.getFamily() == ValueFamily.STRING) acceptString(String.valueOf(value));
-        else if (value instanceof byte[] && options.isLengthEnabled()) acceptLength(((byte[]) value).length);
+        if (value instanceof String || metadata.getFamily() == ValueFamily.STRING) {
+            if (!acceptString(String.valueOf(value))) return;
+        } else if (value instanceof byte[] && options.isLengthEnabled()) {
+            acceptLength(((byte[]) value).length);
+        }
 
+        profiledValueCount++;
         String canonical = ValueNormalizer.canonical(value, options);
         if (distinct != null && canonical != null) {
             boolean first = distinct.add(canonical);
@@ -104,11 +109,18 @@ final class ColumnAccumulator {
         }
     }
 
-    private void acceptString(String raw) {
+    /** Returns false when a blank/semantic-null string must stop before downstream profiling. */
+    private boolean acceptString(String raw) {
         String normalized = options.isTrimStrings() ? raw.trim() : raw;
         if (!raw.equals(normalized)) trimChangedCount++;
-        if (normalized.length() == 0) blankCount++;
-        else if (options.isSemanticNull(normalized)) semanticNullCount++;
+        if (normalized.length() == 0) {
+            blankCount++;
+            return false;
+        }
+        if (options.isSemanticNull(normalized)) {
+            semanticNullCount++;
+            return false;
+        }
         if (options.isLengthEnabled()) acceptLength(raw.length());
         if (options.isPatternProfileEnabled()) trackPattern(normalized);
         if (options.isStringShapeEnabled()) trackShape(normalized);
@@ -122,6 +134,7 @@ final class ColumnAccumulator {
             variants.add(normalized);
             if (foldedVariants.size() > options.getLowCardinalityTrackingLimit()) foldedVariants = null;
         }
+        return true;
     }
 
     private void acceptLength(long length) {
@@ -178,16 +191,16 @@ final class ColumnAccumulator {
     ColumnProfile finish() {
         long distinctCount = distinct == null || (lobContentSkipped && metadata.getFamily() == ValueFamily.LOB)
                 ? 0L : distinct.size();
-        double uniqueness = distinct == null || nonNullCount == 0 || (lobContentSkipped && metadata.getFamily() == ValueFamily.LOB)
-                ? 0.0d : (double) distinctCount / (double) nonNullCount;
+        double uniqueness = distinct == null || profiledValueCount == 0 || (lobContentSkipped && metadata.getFamily() == ValueFamily.LOB)
+                ? 0.0d : (double) distinctCount / (double) profiledValueCount;
         boolean candidatePk = distinct != null && !lobContentSkipped && rowCount > 0
                 && nullCount == 0 && blankCount == 0 && semanticNullCount == 0
                 && distinctCount == rowCount;
-        boolean constant = distinct != null && distinctCount == 1 && nonNullCount > 0;
+        boolean constant = distinct != null && distinctCount == 1 && profiledValueCount > 0;
         boolean lowCardinality = distinct != null && lowCardinalityFrequencies != null
                 && distinctCount <= options.getLowCardinalityTrackingLimit();
         List<ValueFrequency> values = buildValues();
-        boolean quasiConstant = !values.isEmpty() && nonNullCount > 0 && values.get(0).getRatio() >= 0.99d;
+        boolean quasiConstant = !values.isEmpty() && profiledValueCount > 0 && values.get(0).getRatio() >= 0.99d;
         Double avgLength = lengthCount == 0 ? null : (double) totalLength / (double) lengthCount;
         int caseVariantGroups = 0;
         if (foldedVariants != null) {
@@ -220,7 +233,7 @@ final class ColumnAccumulator {
         List<ValueFrequency> result = new ArrayList<ValueFrequency>(limit);
         for (int i = 0; i < limit; i++) {
             Map.Entry<String, Long> e = entries.get(i);
-            double ratio = nonNullCount == 0 ? 0.0d : (double) e.getValue() / (double) nonNullCount;
+            double ratio = profiledValueCount == 0 ? 0.0d : (double) e.getValue() / (double) profiledValueCount;
             result.add(new ValueFrequency(e.getKey(), e.getValue(), ratio));
         }
         return result;

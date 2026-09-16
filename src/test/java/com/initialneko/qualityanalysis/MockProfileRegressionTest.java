@@ -2,6 +2,7 @@ package com.initialneko.qualityanalysis;
 
 import com.initialneko.qualityanalysis.model.ColumnProfile;
 import com.initialneko.qualityanalysis.model.TableProfile;
+import com.initialneko.qualityanalysis.model.ValueFrequency;
 import org.junit.Test;
 
 import static org.junit.Assert.*;
@@ -35,6 +36,14 @@ public class MockProfileRegressionTest {
         assertEquals(1L, optional.getNullCount());
         assertEquals(1L, optional.getBlankCount());
         assertEquals(1L, optional.getSemanticNullCount());
+        assertEquals(4L, optional.getDistinctCount());
+        assertEquals(4.0d / 197.0d, optional.getUniqueness(), 0.000001d);
+        assertEquals(Long.valueOf(2L), optional.getMinLength());
+        assertEquals(Long.valueOf(2L), optional.getMaxLength());
+        for (ValueFrequency value : optional.getValues()) {
+            assertNotEquals("", value.getValue());
+            assertNotEquals("NULL", value.getValue());
+        }
         ColumnProfile age = profile.findColumn("AGE");
         assertEquals("-1", age.getMinValue());
         assertEquals("150", age.getMaxValue());
