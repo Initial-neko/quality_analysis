@@ -4,6 +4,7 @@ import com.initialneko.qualityanalysis.config.ProfileOptions;
 import com.initialneko.qualityanalysis.persistence.ProfileRunStore;
 import com.initialneko.qualityanalysis.persistence.RunManifest;
 import com.initialneko.qualityanalysis.persistence.TableProfileRecord;
+import com.initialneko.qualityanalysis.report.HtmlProfileReportWriter;
 import com.initialneko.qualityanalysis.report.ProfileReportGenerator;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -67,8 +68,12 @@ public class ProfilePersistenceAndReportTest {
         new ProfileReportGenerator().generateAll(runDirectory);
         Path excel = runDirectory.resolve(ProfileReportGenerator.EXCEL_FILE);
         Path html = runDirectory.resolve(ProfileReportGenerator.HTML_FILE);
+        Path customerHtml = runDirectory.resolve(HtmlProfileReportWriter.TABLE_PAGE_DIRECTORY).resolve("TEST.CUSTOMER.html");
+        Path ordersHtml = runDirectory.resolve(HtmlProfileReportWriter.TABLE_PAGE_DIRECTORY).resolve("TEST.ORDERS.html");
         assertTrue(Files.size(excel) > 0L);
         assertTrue(Files.size(html) > 0L);
+        assertTrue(Files.size(customerHtml) > 0L);
+        assertTrue(Files.size(ordersHtml) > 0L);
 
         InputStream in = Files.newInputStream(excel);
         Workbook workbook = new XSSFWorkbook(in);
@@ -93,12 +98,19 @@ public class ProfilePersistenceAndReportTest {
         String htmlText = new String(Files.readAllBytes(html), StandardCharsets.UTF_8);
         assertTrue(htmlText.contains("数据质量 Profile 报告"));
         assertTrue(htmlText.contains("CUSTOMER"));
-        assertTrue(htmlText.contains("PHONE"));
-        assertTrue(htmlText.contains("潜在枚举"));
-        assertTrue(htmlText.contains("Distinct/唯一率"));
-        assertTrue(htmlText.contains("<div>Min："));
-        assertTrue(htmlText.contains("<div>Max："));
-        assertTrue(htmlText.contains("class=\"values\""));
+        assertTrue(htmlText.contains("quality-profile-tables/TEST.CUSTOMER.html"));
+        assertFalse("首页不应再铺开字段明细", htmlText.contains("PHONE"));
+        assertFalse("首页不应再包含字段明细表头", htmlText.contains("Distinct/唯一率"));
+
+        String customerHtmlText = new String(Files.readAllBytes(customerHtml), StandardCharsets.UTF_8);
+        assertTrue(customerHtmlText.contains("TEST.CUSTOMER"));
+        assertTrue(customerHtmlText.contains("PHONE"));
+        assertTrue(customerHtmlText.contains("潜在枚举"));
+        assertTrue(customerHtmlText.contains("Distinct/唯一率"));
+        assertTrue(customerHtmlText.contains("<div>Min："));
+        assertTrue(customerHtmlText.contains("<div>Max："));
+        assertTrue(customerHtmlText.contains("class=\"values\""));
+        assertTrue(customerHtmlText.contains("../quality-profile.html"));
     }
 
     private static TableProfileRecord.ColumnRecord find(TableProfileRecord record, String column) {
