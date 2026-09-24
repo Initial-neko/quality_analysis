@@ -20,36 +20,13 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
 /** Writes a compact Excel delivery report from persisted records. */
 public final class ExcelProfileReportWriter {
-    /**
-     * The field-detail delivery layout is configured only here.
-     * Remove, add or reorder an item in this array and header/value/width move together.
-     */
-    private static final ExcelDetailColumn[] DETAIL_COLUMNS = {
-            ExcelDetailColumn.DATABASE,
-            ExcelDetailColumn.SCHEMA,
-            ExcelDetailColumn.TABLE,
-            ExcelDetailColumn.COLUMN,
-            ExcelDetailColumn.DB_TYPE,
-            ExcelDetailColumn.PRIMARY_KEY,
-            ExcelDetailColumn.ROW_COUNT,
-            ExcelDetailColumn.NULL_COUNT,
-            ExcelDetailColumn.NULL_RATE,
-            ExcelDetailColumn.MISSING_STRINGS,
-            ExcelDetailColumn.DISTINCT_COUNT,
-            ExcelDetailColumn.UNIQUENESS,
-            ExcelDetailColumn.MIN_VALUE,
-            ExcelDetailColumn.MAX_VALUE,
-            ExcelDetailColumn.LENGTH_SUMMARY,
-            ExcelDetailColumn.VALUES,
-            ExcelDetailColumn.INSIGHTS
-    };
-
     public void write(RunManifest manifest, List<TableProfileRecord> records, Path output) throws IOException {
         Files.createDirectories(output.getParent());
         Workbook workbook = new XSSFWorkbook();
@@ -122,33 +99,16 @@ public final class ExcelProfileReportWriter {
         sheet.setColumnWidth(1, 32 * 256);
     }
 
+    /** Detail layout is annotation-driven: see {@link DetailRow}. */
     private void writeFieldDetails(Workbook workbook, Styles styles, List<TableProfileRecord> records) {
-        Sheet sheet = workbook.createSheet("字段质量明细");
-        writeDetailHeader(sheet, styles);
-        ExcelDetailColumn.Styles detailStyles = new ExcelDetailColumn.Styles(styles.percent, styles.wrap);
-        int rowIndex = 1;
+        List<DetailRow> detailRows = new ArrayList<DetailRow>();
         for (TableProfileRecord record : records) {
             for (ColumnRecord column : record.columns) {
-                Row row = sheet.createRow(rowIndex++);
-                for (int i = 0; i < DETAIL_COLUMNS.length; i++) {
-                    DETAIL_COLUMNS[i].write(row, i, record, column, detailStyles);
-                }
+                detailRows.add(new DetailRow(record, column));
             }
         }
-        sheet.createFreezePane(0, 1);
-        if (rowIndex > 1) sheet.setAutoFilter(new CellRangeAddress(0, rowIndex - 1, 0, DETAIL_COLUMNS.length - 1));
-        for (int i = 0; i < DETAIL_COLUMNS.length; i++) {
-            sheet.setColumnWidth(i, DETAIL_COLUMNS[i].widthCharacters * 256);
-        }
-    }
-
-    private void writeDetailHeader(Sheet sheet, Styles styles) {
-        Row header = sheet.createRow(0);
-        for (int i = 0; i < DETAIL_COLUMNS.length; i++) {
-            Cell cell = header.createCell(i);
-            cell.setCellValue(DETAIL_COLUMNS[i].header);
-            cell.setCellStyle(styles.header);
-        }
+        ReportEngine.excelSheet(workbook, "字段质量明细", detailRows, DetailRow.class,
+                new ExcelRenderer.Styles(styles.header, styles.percent, styles.wrap));
     }
 
     private void writeInsights(Workbook workbook, Styles styles, List<TableProfileRecord> records) {

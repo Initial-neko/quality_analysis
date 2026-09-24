@@ -29,6 +29,7 @@ public final class ColumnProfile {
     private final List<PatternFrequency> topPatterns;
     private final StringShapeStats stringShapeStats;
     private final SetFingerprint setFingerprint;
+    private final PresetValidation presetValidation;
 
     public ColumnProfile(ColumnMetadata metadata, long rowCount, long nullCount, long blankCount,
                          long semanticNullCount, long nonNullCount, long distinctCount, double uniqueness,
@@ -37,7 +38,7 @@ public final class ColumnProfile {
                          boolean constant, boolean quasiConstant, boolean lowCardinality,
                          boolean lobContentSkipped, List<ValueFrequency> values,
                          List<PatternFrequency> topPatterns, StringShapeStats stringShapeStats,
-                         SetFingerprint setFingerprint) {
+                         SetFingerprint setFingerprint, PresetValidation presetValidation) {
         this.metadata = metadata;
         this.rowCount = rowCount;
         this.nullCount = nullCount;
@@ -62,6 +63,7 @@ public final class ColumnProfile {
         this.topPatterns = Collections.unmodifiableList(new ArrayList<PatternFrequency>(topPatterns));
         this.stringShapeStats = stringShapeStats;
         this.setFingerprint = setFingerprint;
+        this.presetValidation = presetValidation;
     }
 
     public ColumnMetadata getMetadata() { return metadata; }
@@ -90,4 +92,5 @@ public final class ColumnProfile {
     public List<PatternFrequency> getTopPatterns() { return topPatterns; }
     public StringShapeStats getStringShapeStats() { return stringShapeStats; }
     public SetFingerprint getSetFingerprint() { return setFingerprint; }
+    public PresetValidation getPresetValidation() { return presetValidation; }
 }

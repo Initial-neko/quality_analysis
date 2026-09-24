@@ -5,10 +5,12 @@ import com.initialneko.qualityanalysis.jdbc.LobValue;
 import com.initialneko.qualityanalysis.model.ColumnMetadata;
 import com.initialneko.qualityanalysis.model.ColumnProfile;
 import com.initialneko.qualityanalysis.model.PatternFrequency;
+import com.initialneko.qualityanalysis.model.PresetValidation;
 import com.initialneko.qualityanalysis.model.SetFingerprint;
 import com.initialneko.qualityanalysis.model.StringShapeStats;
 import com.initialneko.qualityanalysis.model.ValueFrequency;
 import com.initialneko.qualityanalysis.model.ValueFamily;
+import com.initialneko.qualityanalysis.regex.PresetRegexRule;
 import com.initialneko.qualityanalysis.util.PatternFingerprint;
 import com.initialneko.qualityanalysis.util.StringShapeClassifier;
 import com.initialneko.qualityanalysis.util.ValueNormalizer;
@@ -57,6 +59,13 @@ final class ColumnAccumulator {
     private long mixed;
     private boolean lobContentSkipped;
 
+    // Preset regex validation (assigned mid-scan after sample-based classification).
+    private PresetRegexRule presetRule;
+    private long presetMatched;
+    private long presetUnmatched;
+    private List<String> presetUnmatchedSamples;
+    private static final int PRESET_SAMPLE_LIMIT = 20;
+
     ColumnAccumulator(ColumnMetadata metadata, ProfileOptions options) {
         this.metadata = metadata;
         this.options = options;
@@ -69,6 +78,35 @@ final class ColumnAccumulator {
                 ? new HashMap<String, Set<String>>() : null;
         this.patternCounts = options.isPatternProfileEnabled()
                 ? new HashMap<String, Long>() : null;
+    }
+
+    /** Assigns the preset rule mid-scan (after the first N rows were classified). */
+    void setPresetRule(PresetRegexRule rule) {
+        this.presetRule = rule;
+        this.presetUnmatchedSamples = rule == null ? null : new ArrayList<String>();
+    }
+
+    /** Replays one sampled value against the assigned preset rule (backfill after classification). */
+    void recordPresetValue(Object value) {
+        if (presetRule == null || value == null) return;
+        String raw = value instanceof String ? (String) value
+                : (metadata.getFamily() == ValueFamily.STRING ? String.valueOf(value) : null);
+        if (raw == null) return;
+        String normalized = options.isTrimStrings() ? raw.trim() : raw;
+        trackPreset(normalized);
+    }
+
+    private void trackPreset(String normalized) {
+        if (presetRule == null || normalized == null || normalized.length() == 0) return;
+        if (options.isSemanticNull(normalized)) return;
+        if (presetRule.matches(normalized)) {
+            presetMatched++;
+        } else {
+            presetUnmatched++;
+            if (presetUnmatchedSamples != null && presetUnmatchedSamples.size() < PRESET_SAMPLE_LIMIT) {
+                presetUnmatchedSamples.add(normalized);
+            }
+        }
     }
 
     void accept(Object value) {
@@ -121,6 +159,7 @@ final class ColumnAccumulator {
             semanticNullCount++;
             return false;
         }
+        if (presetRule != null) trackPreset(normalized);
         if (options.isLengthEnabled()) acceptLength(raw.length());
         if (options.isPatternProfileEnabled()) trackPattern(normalized);
         if (options.isStringShapeEnabled()) trackShape(normalized);
@@ -209,12 +248,24 @@ final class ColumnAccumulator {
         SetFingerprint setFingerprint = fingerprint == null
                 ? new SetFingerprint(0L, 0L, 0L, 0L, new long[0])
                 : fingerprint.finish();
+        PresetValidation presetValidation = buildPresetValidation();
         return new ColumnProfile(metadata, rowCount, nullCount, blankCount, semanticNullCount, nonNullCount,
                 distinctCount, uniqueness, minValue, maxValue, minLength, maxLength, avgLength,
                 trimChangedCount, caseVariantGroups, candidatePk, constant, quasiConstant,
                 lowCardinality, lobContentSkipped, values, buildPatterns(),
                 new StringShapeStats(numericOnly, alphabeticOnly, alphanumericOnly, chineseOnly,
-                        containsWhitespace, containsSpecial, mixed), setFingerprint);
+                        containsWhitespace, containsSpecial, mixed), setFingerprint, presetValidation);
+    }
+
+    /** Match rate counts only non-blank string values (NULL/blank/semantic-null excluded). */
+    private PresetValidation buildPresetValidation() {
+        if (presetRule == null) return null;
+        long total = presetMatched + presetUnmatched;
+        if (total == 0) return null;
+        double rate = (double) presetMatched / (double) total;
+        return new PresetValidation(presetRule.getName(), presetRule.getDescription(),
+                presetMatched, presetUnmatched, rate,
+                presetUnmatchedSamples == null ? Collections.<String>emptyList() : presetUnmatchedSamples);
     }
 
     private List<ValueFrequency> buildValues() {

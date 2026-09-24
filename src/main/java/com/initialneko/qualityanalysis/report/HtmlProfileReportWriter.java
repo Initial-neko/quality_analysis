@@ -3,7 +3,6 @@ package com.initialneko.qualityanalysis.report;
 import com.initialneko.qualityanalysis.persistence.RunManifest;
 import com.initialneko.qualityanalysis.persistence.TableProfileRecord;
 import com.initialneko.qualityanalysis.persistence.TableProfileRecord.ColumnRecord;
-import com.initialneko.qualityanalysis.persistence.TableProfileRecord.ValueRecord;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -116,21 +116,19 @@ public final class HtmlProfileReportWriter {
         card(html, "常量字段", constantCount);
         html.append("</div>");
 
-        html.append("<div class=\"panel\"><table class=\"detail-table\"><thead><tr><th>字段</th><th>类型</th><th>主键</th><th>NULL</th><th>空串/语义空</th><th>Distinct/唯一率</th><th>值域</th><th>长度</th><th>探查提示</th><th>枚举/TopN</th></tr></thead><tbody>");
-        for (ColumnRecord column : record.columns) {
-            html.append("<tr><td><b>").append(escape(column.name)).append("</b></td><td>")
-                    .append(escape(column.databaseTypeName)).append("</td><td>").append(column.declaredPrimaryKey ? "是" : "")
-                    .append("</td><td class=\"metric\"><div>数量：").append(column.nullCount).append("</div><div>比例：")
-                    .append(percent(column.nullRate)).append("</div></td><td class=\"metric\"><div>空串：")
-                    .append(column.blankCount).append("</div><div>语义空：").append(column.semanticNullCount)
-                    .append("</div></td><td class=\"metric\"><div>Distinct：").append(column.distinctCount)
-                    .append("</div><div>唯一率：").append(percent(column.uniqueness)).append("</div></td><td class=\"metric\"><div>Min：")
-                    .append(escape(column.minValue)).append("</div><div>Max：").append(escape(column.maxValue))
-                    .append("</div></td><td>").append(lengthHtml(column)).append("</td><td>").append(insightTags(column))
-                    .append("</td><td class=\"values\">").append(valueSummaryHtml(column.values)).append("</td></tr>");
-        }
-        html.append("</tbody></table></div></main></body></html>");
+        html.append("<div class=\"panel\">")
+                .append(HtmlRenderer.renderTable(detailRows(record), ReportEngine.descriptor(DetailRow.class)))
+                .append("</div></main></body></html>");
         Files.write(output, html.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The detail table is annotation-driven: same entity drives Excel. */
+    private static List<DetailRow> detailRows(TableProfileRecord record) {
+        List<DetailRow> rows = new ArrayList<DetailRow>(record.columns.size());
+        for (ColumnRecord column : record.columns) {
+            rows.add(new DetailRow(record, column));
+        }
+        return rows;
     }
 
     private static void appendHead(StringBuilder html, String title, boolean detailPage) {
@@ -190,42 +188,10 @@ public final class HtmlProfileReportWriter {
         return out.toString();
     }
 
-    private static String insightTags(ColumnRecord column) {
-        StringBuilder out = new StringBuilder();
-        if (column.potentialEnum) tag(out, "潜在枚举");
-        if (column.candidatePrimaryKey) tag(out, "候选唯一键");
-        if (column.constant) tag(out, "常量字段");
-        else if (column.quasiConstant) tag(out, "准常量");
-        if (column.lobContentSkipped) tag(out, "LOB仅画像长度");
-        return out.toString();
-    }
 
-    private static void tag(StringBuilder out, String text) {
-        out.append("<span class=\"tag\">").append(escape(text)).append("</span>");
-    }
 
-    private static String valueSummaryHtml(List<ValueRecord> values) {
-        if (values == null || values.isEmpty()) return "";
-        StringBuilder out = new StringBuilder();
-        for (ValueRecord value : values) {
-            out.append("<div>").append(escape(value.value == null ? "<NULL>" : value.value))
-                    .append(" <span class=\"muted\">(").append(value.count).append(", ")
-                    .append(percent(value.ratio)).append(")</span></div>");
-        }
-        return out.toString();
-    }
 
-    private static String lengthHtml(ColumnRecord column) {
-        if (column.minLength == null && column.maxLength == null && column.avgLength == null) return "";
-        StringBuilder out = new StringBuilder("<div class=\"metric\">");
-        out.append("<div>最小：").append(escape(safeNumber(column.minLength))).append("</div>")
-                .append("<div>最大：").append(escape(safeNumber(column.maxLength))).append("</div>")
-                .append("<div>平均：").append(column.avgLength == null ? "" : String.format(Locale.ROOT, "%.2f", column.avgLength)).append("</div></div>");
-        return out.toString();
-    }
 
-    private static String safeNumber(Number value) { return value == null ? "" : String.valueOf(value); }
-    private static String percent(double value) { return String.format(Locale.ROOT, "%.2f%%", value * 100.0d); }
 
     private static String formatTime(long epochMillis) {
         if (epochMillis <= 0L) return "";

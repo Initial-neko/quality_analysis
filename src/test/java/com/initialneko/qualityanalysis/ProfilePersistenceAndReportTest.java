@@ -81,11 +81,13 @@ public class ProfilePersistenceAndReportTest {
             assertNotNull(workbook.getSheet("扫描概览"));
             Sheet detail = workbook.getSheet("字段质量明细");
             assertNotNull(detail);
-            assertEquals("主明细应保持精简，避免再次膨胀", 17, detail.getRow(0).getLastCellNum());
+            assertEquals("主明细应保持精简，避免再次膨胀", 22, detail.getRow(0).getLastCellNum());
             assertTrue(containsCell(detail, "CUSTOMER"));
             assertTrue(containsCell(detail, "PHONE"));
             assertTrue(containsCell(detail, "空串/语义空"));
             assertTrue(containsCell(detail, "探查提示"));
+            assertTrue("预设校验列应由注解框架统一渲染", containsCell(detail, "预设类型"));
+            assertTrue(containsCell(detail, "预设匹配率"));
             assertFalse(containsCell(detail, "JDBC类型"));
             assertFalse(containsCell(detail, "类型族"));
             assertFalse(containsCell(detail, "LOB内容跳过"));
@@ -106,9 +108,11 @@ public class ProfilePersistenceAndReportTest {
         assertTrue(customerHtmlText.contains("TEST.CUSTOMER"));
         assertTrue(customerHtmlText.contains("PHONE"));
         assertTrue(customerHtmlText.contains("潜在枚举"));
-        assertTrue(customerHtmlText.contains("Distinct/唯一率"));
-        assertTrue(customerHtmlText.contains("<div>Min："));
-        assertTrue(customerHtmlText.contains("<div>Max："));
+        assertTrue("明细表头应由注解驱动", customerHtmlText.contains("Distinct数"));
+        assertTrue(customerHtmlText.contains("唯一率"));
+        assertTrue(customerHtmlText.contains("最小值"));
+        assertTrue(customerHtmlText.contains("最大值"));
+        assertTrue("预设校验列应同时出现在HTML明细表", customerHtmlText.contains("预设类型"));
         assertTrue(customerHtmlText.contains("class=\"values\""));
         assertTrue(customerHtmlText.contains("../quality-profile.html"));
     }

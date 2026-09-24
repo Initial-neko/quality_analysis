@@ -98,6 +98,7 @@ Java Serialization 不透明，并且和类版本绑定较紧。JSON 更容易�
 - 候选唯一键
 - 常量 / 准常量
 - 可选 Pattern / 字符组成结果（仅在相关开关开启时）
+- 预设正则校验结果 `presetValidation`（命中预设类型的列才有值）
 
 正式 JSON 写入前先写 `*.tmp`，成功后再替换正式文件，避免中断产生半写文件。
 
@@ -139,7 +140,7 @@ quality-profile.xlsx
 
 ### 2. 字段质量明细
 
-当前主明细固定为 17 列：
+明细列由 `DetailRow` 上的注解统一驱动（见 `docs/EXCEL_COLUMNS.md`），当前为 22 列：
 
 ```text
 数据库
@@ -159,6 +160,11 @@ Distinct数
 长度(最小/最大/平均)
 枚举/TopN
 探查提示
+预设类型
+预设匹配率
+预设匹配数
+预设不匹配数
+不匹配样本
 ```
 
 内部 JDBC 类型号、ValueFamily、nullable、nonNullCount、LOB 内部标记等继续保存在 JSON，不在主交付 Sheet 中铺开。
@@ -201,7 +207,22 @@ quality-profile-tables/<schema>.<table>.html
 
 所有页面仍然是纯静态文件，不需要 Spring、Tomcat、Nginx、Node 或其他 Web Server。直接双击 `quality-profile.html` 即可使用，相对链接会打开对应表页面。
 
-## 八、探查提示的语义边界
+## 八、预设正则类型识别与校验
+
+这是对 V1 "只探查不校验" 边界的**一个确认过的范围例外**（见 `docs/DESIGN.md` §十三）。
+
+### 机制
+
+1. **取样识别**：取每张表扫描的前 N 行（默认 10，`ProfileOptions.presetSampleSize`，通过单遍扫描内截取实现，不改扫描 SQL）。
+2. **类型判定**：对每个字符串列，用内置预设正则（手机号/身份证/邮箱/日期时间/日期/URL/整数/小数/邮编，见 `regex/BuiltinPresetRules`）+ 可选自定义规则（JSON 配置，见 `config/preset-regex.json.example`）逐个匹配采样值。非空样本命中率 ≥ 阈值（默认 80%）且比率最高的规则获胜；并列取规则顺序首位。
+3. **全列校验**：命中后，该列全部非空字符串值（NULL/空串/语义空不计入分母）继续参与正则校验，统计匹配数/不匹配数/匹配率，并保留最多 20 条不匹配样本。
+4. **报告呈现**：字段质量明细（HTML + Excel）尾部追加 `预设类型 / 预设匹配率 / 预设匹配数 / 预设不匹配数 / 不匹配样本` 列。
+
+### 语义边界
+
+这仍然是**探查型标注**：`预设匹配率` 说明"该列长什么样"，不是 PASS/FAIL，不产生整改动作。自定义规则使用 JSON 文件 + `--preset-config <file>` 加载，非法正则会被跳过并告警；所有匹配均为全长锚定且限制输入长度（ReDoS 防护）。默认开启，可用 `--no-preset-validation` 关闭。
+
+## 九、探查提示的语义边界
 
 当前探查提示不是 Rule，也不是 PASS / FAIL。
 
@@ -248,7 +269,7 @@ AND 非 LOB
 
 HTML/Excel 字段明细还会显示 `LOB仅统计长度` / `LOB仅画像长度`，用于说明 CLOB/BLOB 正文没有参与 Distinct、TopN 等画像。这是处理策略提示，不属于四类正式探查发现。
 
-## 九、最重要的业务边界
+## 十、最重要的业务边界
 
 V1 没有字段级 Rule。
 
@@ -274,7 +295,7 @@ distinct=5
 archive/profile-with-rules
 ```
 
-## 十、单表重跑
+## 十一、单表重跑
 
 单表重跑后，可以重新写同一个：
 
@@ -286,7 +307,7 @@ archive/profile-with-rules
 
 当前 V1 尚未提供“选择失败表一键重跑”的 UI/命令，但存储结构已经支持未来增加这个能力。
 
-## 十一、测试
+## 十二、测试
 
 `ProfilePersistenceAndReportTest` 验证：
 

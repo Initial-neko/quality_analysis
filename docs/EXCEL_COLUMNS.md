@@ -1,106 +1,54 @@
-# Excel 字段明细列配置
+# 字段质量明细列配置（注解驱动）
 
-## 一、为什么要改
+## 一、演进过程
 
-之前 `字段质量明细` 的列定义分散在 `ExcelProfileReportWriter` 多个位置：
-
-- `DETAIL_HEADERS` 决定表头；
-- `writeFieldDetails()` 手工按位置写每一列；
-- 单独的 `widths` 数组决定列宽；
-- AutoFilter 又依赖表头数组长度。
-
-因此删除一列时必须同时修改多处，而且很容易出现“表头删了但数据没有删”“后面列整体错位”“列宽和字段对不上”等问题。
+- 最早：列定义分散在 `ExcelProfileReportWriter` 多个位置（表头数组、手工按位写值、列宽数组、AutoFilter），删列要同步改多处。
+- 第一次重构：集中到 `ExcelDetailColumn` 枚举（已在本次改造中移除）。
+- **当前：注解驱动的通用渲染框架**。列定义在实体类的注解里，HTML 与 Excel 由同一份列描述符渲染，从架构上保证两个出口不会漂移。
 
 ## 二、当前结构
 
-现在每一列都集中定义在：
+明细表的"实体类"是：
 
 ```text
-src/main/java/com/initialneko/qualityanalysis/report/ExcelDetailColumn.java
+src/main/java/com/initialneko/qualityanalysis/report/DetailRow.java
 ```
 
-一列同时包含：
+每一列是一个 `@DerivedColumn` 方法，同时声明：
 
-- 表头名称；
-- 默认列宽；
-- 该列如何从 `TableProfileRecord` / `ColumnRecord` 取值；
-- 百分比、换行等显示方式。
+- `order`：列顺序（升序渲染）；
+- `header`：表头名称；
+- `width`：Excel 列宽（字符数）；
+- `type`：单元格语义（`TEXT / NUMBER / PERCENT / WRAP / DATE`），同时驱动 HTML 格式化与 Excel 样式。
 
-真正决定 `字段质量明细` 默认输出哪些列、以及顺序的地方只有：
-
-```text
-ExcelProfileReportWriter.DETAIL_COLUMNS
-```
-
-例如当前类似：
+例如：
 
 ```java
-private static final ExcelDetailColumn[] DETAIL_COLUMNS = {
-    ExcelDetailColumn.DATABASE,
-    ExcelDetailColumn.SCHEMA,
-    ExcelDetailColumn.TABLE,
-    ExcelDetailColumn.COLUMN,
-    ExcelDetailColumn.DB_TYPE,
-    ...
-    ExcelDetailColumn.INSIGHTS
-};
+@DerivedColumn(order = 25, header = "NULL率", width = 12, type = CellType.PERCENT)
+public Double nullRate() { return column.nullRate; }
 ```
 
-如果后续不需要 `总行数` 和 `最小值`，只删除：
+增删/调序/改名/改宽度都只改这一个方法；HTML 明细表和 Excel 明细 Sheet 会同步变化。
 
-```java
-ExcelDetailColumn.ROW_COUNT,
-ExcelDetailColumn.MIN_VALUE,
-```
-
-即可。
-
-表头、行数据、列宽和 AutoFilter 会一起调整，不需要再同步修改其他数组或列序号。
-
-如果只是调整顺序，也只移动 `DETAIL_COLUMNS` 中对应项。
-
-## 三、为什么暂时不做外部配置文件
-
-V1 的目标仍然是轻量、可携带、最小配置。当前主要诉求是让开发人员能够快速裁剪交付列，而不是让最终用户在运行时自由组合 Excel 模板。
-
-因此当前先采用“代码内单点配置”，不增加：
-
-- 新的 properties/yaml；
-- CLI 参数；
-- 模板解析器；
-- 动态表达式。
-
-如果后续现场确实出现多套长期并存的 Excel 模板，再考虑把 `DETAIL_COLUMNS` 外置成配置。
-
-## 四、DB 类型展示
-
-JDBC 扫描阶段本来就已经保存：
+## 三、渲染链路
 
 ```text
-columnTypeName
-precision
-scale
-jdbcType
+DetailRow（注解）
+   |
+ReportDescriptorBuilder.scan(DetailRow.class)
+   |
+ReportDescriptor（列描述符：表头/顺序/宽度/类型/取值器）
+   |
+   +-- HtmlRenderer.renderTable(rows, descriptor)   -> HTML 明细 <table>
+   `-- ExcelRenderer.renderSheet(...)               -> Excel 明细 Sheet
 ```
 
-报告层现在通过 `DatabaseTypeFormatter` 使用这些已有元数据，不增加数据库查询。
+框架本身是通用的：任何实体类只要加上 `@ReportTable / @ReportColumn / @DerivedColumn / @Flatten` 注解，交给 `ReportEngine.descriptor(Class)` 即可渲染出 HTML 表格与 Excel Sheet，不限于 `DetailRow`。
 
-典型展示：
+## 四、预设正则校验列
 
-```text
-VARCHAR + precision=100     -> VARCHAR(100)
-CHAR + precision=10         -> CHAR(10)
-DECIMAL + 18,2              -> DECIMAL(18,2)
-NUMBER + 20,0               -> NUMBER(20,0)
-INTEGER + precision=10      -> INTEGER
-```
+明细表尾部有 5 个预设校验列（`预设类型 / 预设匹配率 / 预设匹配数 / 预设不匹配数 / 不匹配样本`），由 `ColumnRecord.presetValidation` 派生，同样只是 `DetailRow` 上的注解方法——这正是"加列只加注解"的落地验证。详见 `docs/REPORTS.md`。
 
-最后一条很重要：JDBC 对 INTEGER 也可能返回数值精度，但 `INTEGER(10)` 容易被误解成数据库 DDL 中声明了长度，因此当前只对字符/二进制定长类型显示长度，对 DECIMAL/NUMERIC 显示精度和小数位。
+## 五、为什么仍然不做外部模板配置
 
-如果数据库驱动没有返回有效 precision，则保持原始类型名，例如：
-
-```text
-VARCHAR
-```
-
-而不会人为补一个长度。
+结论与之前一致：保持轻量、零新依赖。注解已经是"代码内单点配置"，若现场出现多套长期并存的 Excel 模板需求，再考虑外置。

@@ -3,6 +3,7 @@ package com.initialneko.qualityanalysis.persistence;
 import com.initialneko.qualityanalysis.model.ColumnMetadata;
 import com.initialneko.qualityanalysis.model.ColumnProfile;
 import com.initialneko.qualityanalysis.model.PatternFrequency;
+import com.initialneko.qualityanalysis.model.PresetValidation;
 import com.initialneko.qualityanalysis.model.StringShapeStats;
 import com.initialneko.qualityanalysis.model.TableProfile;
 import com.initialneko.qualityanalysis.model.ValueFrequency;
@@ -70,6 +71,7 @@ public final class TableProfileRecord {
         public List<ValueRecord> values = new ArrayList<ValueRecord>();
         public List<PatternRecord> patterns = new ArrayList<PatternRecord>();
         public ShapeRecord shape;
+        public PresetValidationRecord presetValidation;
 
         static ColumnRecord from(ColumnProfile profile) {
             ColumnMetadata metadata = profile.getMetadata();
@@ -113,6 +115,9 @@ public final class TableProfileRecord {
             }
             if (profile.getStringShapeStats() != null) {
                 record.shape = ShapeRecord.from(profile.getStringShapeStats());
+            }
+            if (profile.getPresetValidation() != null) {
+                record.presetValidation = PresetValidationRecord.from(profile.getPresetValidation());
             }
             return record;
         }
@@ -162,6 +167,30 @@ public final class TableProfileRecord {
             record.containsWhitespace = stats.getContainsWhitespace();
             record.containsSpecial = stats.getContainsSpecial();
             record.mixed = stats.getMixed();
+            return record;
+        }
+    }
+
+    public static final class PresetValidationRecord {
+        public String presetTypeName;
+        public String presetDescription;
+        public long matchedCount;
+        public long unmatchedCount;
+        public double matchRate;
+        public List<String> unmatchedSamples = new ArrayList<String>();
+
+        public PresetValidationRecord() { }
+
+        static PresetValidationRecord from(PresetValidation validation) {
+            PresetValidationRecord record = new PresetValidationRecord();
+            record.presetTypeName = validation.getPresetTypeName();
+            record.presetDescription = validation.getPresetDescription();
+            record.matchedCount = validation.getMatchedCount();
+            record.unmatchedCount = validation.getUnmatchedCount();
+            record.matchRate = validation.getMatchRate();
+            if (validation.getUnmatchedSamples() != null) {
+                record.unmatchedSamples.addAll(validation.getUnmatchedSamples());
+            }
             return record;
         }
     }

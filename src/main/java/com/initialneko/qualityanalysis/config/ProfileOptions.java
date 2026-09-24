@@ -1,5 +1,7 @@
 package com.initialneko.qualityanalysis.config;
 
+import com.initialneko.qualityanalysis.regex.PresetRegexRegistry;
+
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -31,6 +33,10 @@ public final class ProfileOptions {
     private final boolean caseVariantTrackingEnabled;
     private final boolean relationshipFingerprintEnabled;
     private final Set<String> semanticNullTokens;
+    private final boolean presetValidationEnabled;
+    private final int presetSampleSize;
+    private final int presetMatchThresholdPct;
+    private final PresetRegexRegistry presetRegexRegistry;
 
     private ProfileOptions(Builder b) {
         this.fetchSize = b.fetchSize;
@@ -51,6 +57,10 @@ public final class ProfileOptions {
         this.caseVariantTrackingEnabled = b.caseVariantTrackingEnabled;
         this.relationshipFingerprintEnabled = b.relationshipFingerprintEnabled;
         this.semanticNullTokens = Collections.unmodifiableSet(new LinkedHashSet<String>(b.semanticNullTokens));
+        this.presetValidationEnabled = b.presetValidationEnabled;
+        this.presetSampleSize = b.presetSampleSize;
+        this.presetMatchThresholdPct = b.presetMatchThresholdPct;
+        this.presetRegexRegistry = b.presetRegexRegistry;
     }
 
     public static Builder builder() { return new Builder(); }
@@ -79,6 +89,11 @@ public final class ProfileOptions {
     public boolean isCaseVariantTrackingEnabled() { return caseVariantTrackingEnabled; }
     public boolean isRelationshipFingerprintEnabled() { return relationshipFingerprintEnabled; }
     public Set<String> getSemanticNullTokens() { return semanticNullTokens; }
+
+    public boolean isPresetValidationEnabled() { return presetValidationEnabled; }
+    public int getPresetSampleSize() { return presetSampleSize; }
+    public int getPresetMatchThresholdPct() { return presetMatchThresholdPct; }
+    public PresetRegexRegistry getPresetRegexRegistry() { return presetRegexRegistry; }
 
     public boolean isSemanticNull(String value) {
         if (value == null) return false;
@@ -111,6 +126,12 @@ public final class ProfileOptions {
 
         private Set<String> semanticNullTokens = new LinkedHashSet<String>(Arrays.asList("NULL", "N/A", "NA"));
 
+        // Preset regex validation. On by default (confirmed 2026-09); disable for pure-legacy behavior.
+        private boolean presetValidationEnabled = true;
+        private int presetSampleSize = 10;
+        private int presetMatchThresholdPct = 80;
+        private PresetRegexRegistry presetRegexRegistry = PresetRegexRegistry.withBuiltins();
+
         public Builder fetchSize(int v) { this.fetchSize = positive(v, "fetchSize"); return this; }
         public Builder queryTimeoutSeconds(int v) { if (v < 0) throw new IllegalArgumentException("queryTimeoutSeconds < 0"); this.queryTimeoutSeconds = v; return this; }
         public Builder enumPrintThreshold(int v) { this.enumPrintThreshold = positive(v, "enumPrintThreshold"); return this; }
@@ -128,6 +149,19 @@ public final class ProfileOptions {
         public Builder stringShapeEnabled(boolean v) { this.stringShapeEnabled = v; return this; }
         public Builder caseVariantTrackingEnabled(boolean v) { this.caseVariantTrackingEnabled = v; return this; }
         public Builder relationshipFingerprintEnabled(boolean v) { this.relationshipFingerprintEnabled = v; return this; }
+
+        public Builder presetValidationEnabled(boolean v) { this.presetValidationEnabled = v; return this; }
+        public Builder presetSampleSize(int v) { this.presetSampleSize = positive(v, "presetSampleSize"); return this; }
+        public Builder presetMatchThresholdPct(int v) {
+            if (v <= 0 || v > 100) throw new IllegalArgumentException("presetMatchThresholdPct must be in 1..100");
+            this.presetMatchThresholdPct = v;
+            return this;
+        }
+        public Builder presetRegexRegistry(PresetRegexRegistry v) {
+            if (v == null) throw new IllegalArgumentException("presetRegexRegistry must not be null");
+            this.presetRegexRegistry = v;
+            return this;
+        }
 
         public Builder semanticNullTokens(Set<String> values) {
             LinkedHashSet<String> copy = new LinkedHashSet<String>();
